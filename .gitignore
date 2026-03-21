@@ -1,0 +1,20 @@
+# Binary
+codong
+*.exe
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go
+vendor/
+
+# Build output
+/bin/
+归档.zip
