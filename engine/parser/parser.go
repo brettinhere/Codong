@@ -349,6 +349,10 @@ func (p *Parser) parseMatchStatement() *MatchStatement {
 		p.nextToken() // skip =>
 		if p.curToken.Type == lexer.LBRACE {
 			mc.BodyBlock = p.parseBlockStatement()
+		} else if p.curToken.Type == lexer.RETURN {
+			// return statement in match arm → wrap in block
+			retStmt := p.parseReturnStatement()
+			mc.BodyBlock = &BlockStatement{Statements: []Statement{retStmt}}
 		} else {
 			mc.Body = p.parseExpression(LOWEST)
 		}
