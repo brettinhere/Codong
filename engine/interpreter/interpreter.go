@@ -749,7 +749,14 @@ func (i *Interpreter) applyFunction(fn Object, args []Object, named ...map[strin
 		}
 		return NULL_OBJ
 	case *BuiltinFunction:
-		// For builtins, merge named args into a special last arg if needed
+		// Pass named args as a trailing MapObject so builtins can access them
+		if len(named) > 0 && len(named[0]) > 0 {
+			namedMap := &MapObject{Entries: named[0], Order: make([]string, 0, len(named[0]))}
+			for k := range named[0] {
+				namedMap.Order = append(namedMap.Order, k)
+			}
+			args = append(args, namedMap)
+		}
 		return fn.Fn(i, args...)
 	default:
 		return &ErrorObject{IsRuntime: true, Error: codongerror.New(
@@ -830,7 +837,35 @@ func (i *Interpreter) evalErrorModuleMethod(method string) Object {
 					return &ErrorObject{IsRuntime: true, Error: codongerror.New(codongerror.E1002_TYPE_MISMATCH, "error.new: code and message must be strings")}
 				}
 				opts := []codongerror.Option{}
-				// TODO: parse named args for fix, retry, context, docs
+				// Named args arrive as trailing MapObject: fix, retry, context, docs
+				for _, a := range args[2:] {
+					if named, ok := a.(*MapObject); ok {
+						if fix, ok := named.Entries["fix"]; ok {
+							if s, ok := fix.(*StringObject); ok {
+								opts = append(opts, codongerror.WithFix(s.Value))
+							}
+						}
+						if retry, ok := named.Entries["retry"]; ok {
+							if b, ok := retry.(*BoolObject); ok {
+								opts = append(opts, codongerror.WithRetry(b.Value))
+							}
+						}
+						if ctx, ok := named.Entries["context"]; ok {
+							if m, ok := ctx.(*MapObject); ok {
+								ctxMap := map[string]any{}
+								for k, v := range m.Entries {
+									ctxMap[k] = v.Inspect()
+								}
+								opts = append(opts, codongerror.WithContext(ctxMap))
+							}
+						}
+						if docs, ok := named.Entries["docs"]; ok {
+							if s, ok := docs.(*StringObject); ok {
+								opts = append(opts, codongerror.WithDocs(s.Value))
+							}
+						}
+					}
+				}
 				return &ErrorObject{IsRuntime: false, Error: codongerror.New(code.Value, msg.Value, opts...)}
 			case "wrap":
 				if len(args) < 2 {
@@ -1239,9 +1274,20 @@ func (i *Interpreter) evalListMethod(l *ListObject, method string) Object {
 				}
 				return l
 			case "sort":
-				sort.Slice(l.Elements, func(a, b int) bool {
-					return compareObjects(l.Elements[a], l.Elements[b]) < 0
-				})
+				if len(args) > 0 {
+					// Custom comparator: fn(a, b) returns negative/zero/positive number
+					sort.Slice(l.Elements, func(a, b int) bool {
+						result := interp.applyFunction(args[0], []Object{l.Elements[a], l.Elements[b]})
+						if num, ok := result.(*NumberObject); ok {
+							return num.Value < 0
+						}
+						return false
+					})
+				} else {
+					sort.Slice(l.Elements, func(a, b int) bool {
+						return compareObjects(l.Elements[a], l.Elements[b]) < 0
+					})
+				}
 				return l
 			case "slice":
 				start := 0
@@ -1419,6 +1465,14 @@ var builtins = map[string]*BuiltinFunction{
 				elements = append(elements, &NumberObject{Value: float64(i)})
 			}
 			return &ListObject{Elements: elements}
+		},
+	},
+	"channel": {
+		Name: "channel",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			return newRuntimeError(codongerror.E1001_SYNTAX_ERROR,
+				"channel() is not supported in eval mode",
+				"use 'codong run' or 'codong build' for concurrency features")
 		},
 	},
 }
