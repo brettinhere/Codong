@@ -47,14 +47,24 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 			g.writef("%s = %s", name, g.genExpr(s.Value))
 		} else {
 			g.declared[name] = true
-			g.writef("var %s Value = %s", name, g.genExpr(s.Value))
+			g.writef("var %s Value = %s; _ = %s", name, g.genExpr(s.Value), name)
 		}
 	case *parser.ConstStatement:
 		g.declared[s.Name.Value] = true
 		g.writef("var %s Value = %s", s.Name.Value, g.genExpr(s.Value))
 	case *parser.CompoundAssignStatement:
 		target := g.genExpr(s.Target)
-		g.writef("%s %s %s", target, s.Operator, g.genExpr(s.Value))
+		val := g.genExpr(s.Value)
+		switch s.Operator {
+		case "+=":
+			g.writef("%s = cAdd(%s, %s)", target, target, val)
+		case "-=":
+			g.writef("%s = cSub(%s, %s)", target, target, val)
+		case "*=":
+			g.writef("%s = cMul(%s, %s)", target, target, val)
+		case "/=":
+			g.writef("%s = cDiv(%s, %s)", target, target, val)
+		}
 	case *parser.PropertyAssignStatement:
 		g.writef("cSet(%s, %q, %s)", g.genExpr(s.Object), s.Property.Value, g.genExpr(s.Value))
 	case *parser.IndexAssignStatement:
@@ -103,12 +113,12 @@ func (g *Generator) genFuncDef(s *parser.FunctionDefinition) {
 		name := p.Name
 		if s.Defaults != nil {
 			if defExpr, ok := s.Defaults[name]; ok {
-				g.writef("var %s Value; if len(args) > %d { %s = args[%d] } else { %s = %s }",
-					name, i, name, i, name, g.genExpr(defExpr))
+				g.writef("var %s Value; if len(args) > %d { %s = args[%d] } else { %s = %s }; _ = %s",
+					name, i, name, i, name, g.genExpr(defExpr), name)
 				continue
 			}
 		}
-		g.writef("var %s Value; if len(args) > %d { %s = args[%d] }", name, i, name, i)
+		g.writef("var %s Value; if len(args) > %d { %s = args[%d] }; _ = %s", name, i, name, i, name)
 	}
 	g.genBlock(s.Body)
 	g.write("return nil")
@@ -155,7 +165,7 @@ func (g *Generator) genForIn(s *parser.ForInStatement) {
 		g.writef("var %s Value", varName)
 		g.declared[varName] = true
 	}
-	g.writef("for _, _item := range %s.(*CodongList).Elements {", iter)
+	g.writef("for _, _item := range toList(%s).Elements {", iter)
 	g.indent++
 	g.writef("%s = _item", varName)
 	g.genBlock(s.Body)
@@ -205,6 +215,10 @@ func (g *Generator) genMatch(s *parser.MatchStatement) {
 
 func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 	catchVar := s.CatchVar.Value
+	if !g.declared[catchVar] {
+		g.writef("var %s Value", catchVar)
+		g.declared[catchVar] = true
+	}
 	g.write("func() {")
 	g.indent++
 	g.write("defer func() {")
@@ -371,8 +385,8 @@ func (g *Generator) genCall(e *parser.CallExpression) string {
 		}
 	}
 
-	// Generic function call
-	return fmt.Sprintf("%s(%s)", fn, strings.Join(args, ", "))
+	// Generic function call — use cCallFn for dynamic dispatch
+	return fmt.Sprintf("cCallFn(%s, %s)", fn, strings.Join(args, ", "))
 }
 
 func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, arguments []parser.Expression, named map[string]parser.Expression) string {
@@ -394,6 +408,8 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 			return g.genHttpCall(method, args)
 		case "error":
 			return g.genErrorCall(method, args, named)
+		case "llm":
+			return g.genLlmCall(method, args, named)
 		}
 	}
 
@@ -431,30 +447,30 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 func (g *Generator) genDbCall(method string, args []string, named map[string]parser.Expression) string {
 	switch method {
 	case "connect":
-		return fmt.Sprintf("cDbConnect(%s)", args[0])
+		return fmt.Sprintf("cDbConnect(toString(%s))", args[0])
 	case "disconnect":
-		return "cDbDisconnect()"
+		return "cDbDisconnectRT()"
 	case "find":
 		if len(args) > 1 {
-			return fmt.Sprintf("cDbFind(%s, %s.(*CodongMap))", args[0], args[1])
+			return fmt.Sprintf("cDbFind(toString(%s), %s)", args[0], args[1])
 		}
-		return fmt.Sprintf("cDbFind(%s, nil)", args[0])
+		return fmt.Sprintf("cDbFind(toString(%s), nil)", args[0])
 	case "find_one":
 		if len(args) > 1 {
-			return fmt.Sprintf("cDbFindOne(%s, %s.(*CodongMap))", args[0], args[1])
+			return fmt.Sprintf("cDbFindOne(toString(%s), %s)", args[0], args[1])
 		}
-		return fmt.Sprintf("cDbFindOne(%s, nil)", args[0])
+		return fmt.Sprintf("cDbFindOne(toString(%s), nil)", args[0])
 	case "insert":
-		return fmt.Sprintf("cDbInsert(%s, %s.(*CodongMap))", args[0], args[1])
+		return fmt.Sprintf("cDbInsert(toString(%s), %s)", args[0], args[1])
 	case "update":
-		return fmt.Sprintf("cDbUpdate(%s, %s.(*CodongMap), %s.(*CodongMap))", args[0], args[1], args[2])
+		return fmt.Sprintf("cDbUpdate(toString(%s), %s, %s)", args[0], args[1], args[2])
 	case "delete":
-		return fmt.Sprintf("cDbDelete(%s, %s.(*CodongMap))", args[0], args[1])
+		return fmt.Sprintf("cDbDelete(toString(%s), %s)", args[0], args[1])
 	case "query":
 		if len(args) > 1 {
-			return fmt.Sprintf("cDbQuery(%s, %s.(*CodongList).Elements...)", args[0], args[1])
+			return fmt.Sprintf("cDbQuery(toString(%s), toList(%s).Elements...)", args[0], args[1])
 		}
-		return fmt.Sprintf("cDbQuery(%s)", args[0])
+		return fmt.Sprintf("cDbQuery(toString(%s))", args[0])
 	case "count":
 		// Simplify: use raw query
 		if len(args) > 1 {
@@ -474,6 +490,29 @@ func (g *Generator) genHttpCall(method string, args []string) string {
 			return fmt.Sprintf("cHttpPost(toString(%s), %s)", args[0], args[1])
 		}
 		return fmt.Sprintf("cHttpPost(toString(%s), nil)", args[0])
+	}
+	return "nil"
+}
+
+func (g *Generator) genLlmCall(method string, args []string, named map[string]parser.Expression) string {
+	switch method {
+	case "ask":
+		allArgs := make([]string, len(args))
+		copy(allArgs, args)
+		if named != nil {
+			namedParts := []string{}
+			for k, v := range named {
+				namedParts = append(namedParts, fmt.Sprintf("%q, %s", k, g.genExpr(v)))
+			}
+			if len(namedParts) > 0 {
+				allArgs = append(allArgs, fmt.Sprintf("cMap(%s)", strings.Join(namedParts, ", ")))
+			}
+		}
+		return fmt.Sprintf("cLlmAsk(%s)", strings.Join(allArgs, ", "))
+	case "count_tokens":
+		if len(args) > 0 {
+			return fmt.Sprintf("cLlmCountTokens(toString(%s))", args[0])
+		}
 	}
 	return "nil"
 }
@@ -510,9 +549,8 @@ func (g *Generator) genFuncLiteral(e *parser.FunctionLiteral) string {
 	g.indent++
 	for i, p := range e.Params {
 		name := p.Name
-		g.output.WriteString("") // no-op
 		body.WriteString(strings.Repeat("\t", g.indent))
-		body.WriteString(fmt.Sprintf("var %s Value; if len(args) > %d { %s = args[%d] }\n", name, i, name, i))
+		body.WriteString(fmt.Sprintf("var %s Value; if len(args) > %d { %s = args[%d] }; _ = %s\n", name, i, name, i, name))
 	}
 	if e.ArrowExpr != nil {
 		body.WriteString(strings.Repeat("\t", g.indent))

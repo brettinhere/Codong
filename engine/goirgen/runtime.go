@@ -167,6 +167,16 @@ func typeOf(v Value) string {
 	return "unknown"
 }
 
+func toList(v Value) *CodongList {
+	if l, ok := v.(*CodongList); ok { return l }
+	return &CodongList{}
+}
+
+func toMap(v Value) *CodongMap {
+	if m, ok := v.(*CodongMap); ok { return m }
+	return cMap()
+}
+
 // --- Operators ---
 
 func cAdd(a, b Value) Value {
@@ -560,7 +570,7 @@ func cWebPost(pattern string, handler func(...Value) Value) {
 	cWebRoutes = append(cWebRoutes, struct{ method, pattern string; handler func(...Value) Value }{"POST", pattern, handler})
 }
 
-func cWebServe(port int) {
+func cWebServe(port int) Value {
 	mux := http.NewServeMux()
 	for _, r := range cWebRoutes {
 		route := r
@@ -614,6 +624,7 @@ func cWebServe(port int) {
 		server.Shutdown(ctx)
 	}()
 	server.ListenAndServe()
+	return nil
 }
 
 func writeResponse(w http.ResponseWriter, result Value) {
@@ -663,11 +674,17 @@ func cWebHtml(body Value) *CodongMap {
 
 var cDB *sql.DB
 
-func cDbConnect(dsn string) {
+func cDbConnect(dsn string) Value {
 	var err error
 	cDB, err = sql.Open("sqlite", dsn)
 	if err != nil { panic(cError("E2002", "db connect failed: " + err.Error())) }
 	cDB.Exec("PRAGMA journal_mode=WAL")
+	return nil
+}
+
+func cDbDisconnectRT() Value {
+	if cDB != nil { cDB.Close(); cDB = nil }
+	return nil
 }
 
 func cDbDisconnect() {
@@ -691,7 +708,8 @@ func cDbQuery(sqlStr string, params ...Value) Value {
 	return cMap("affected", float64(aff), "id", float64(lid))
 }
 
-func cDbInsert(table string, data *CodongMap) Value {
+func cDbInsert(table string, dataVal Value) Value {
+	data := dataVal.(*CodongMap)
 	var cols, phs []string
 	var vals []interface{}
 	for _, k := range data.Order {
@@ -706,7 +724,9 @@ func cDbInsert(table string, data *CodongMap) Value {
 	return cMap("id", float64(id))
 }
 
-func cDbFind(table string, filter *CodongMap) *CodongList {
+func cDbFind(table string, filterVal Value) *CodongList {
+	var filter *CodongMap
+	if filterVal != nil { filter, _ = filterVal.(*CodongMap) }
 	where, args := filterSQL(filter)
 	q := "SELECT * FROM " + table
 	if where != "" { q += " WHERE " + where }
@@ -716,7 +736,9 @@ func cDbFind(table string, filter *CodongMap) *CodongList {
 	return rowsToList(rows)
 }
 
-func cDbFindOne(table string, filter *CodongMap) Value {
+func cDbFindOne(table string, filterVal Value) Value {
+	var filter *CodongMap
+	if filterVal != nil { filter, _ = filterVal.(*CodongMap) }
 	where, args := filterSQL(filter)
 	q := "SELECT * FROM " + table
 	if where != "" { q += " WHERE " + where }
@@ -729,7 +751,9 @@ func cDbFindOne(table string, filter *CodongMap) Value {
 	return list.Elements[0]
 }
 
-func cDbUpdate(table string, filter *CodongMap, data *CodongMap) Value {
+func cDbUpdate(table string, filterVal Value, dataVal Value) Value {
+	filter := filterVal.(*CodongMap)
+	data := dataVal.(*CodongMap)
 	var setClauses []string; var setVals []interface{}
 	for _, k := range data.Order {
 		setClauses = append(setClauses, k+" = ?")
@@ -745,7 +769,9 @@ func cDbUpdate(table string, filter *CodongMap, data *CodongMap) Value {
 	return cMap("affected", float64(aff))
 }
 
-func cDbDelete(table string, filter *CodongMap) Value {
+func cDbDelete(table string, filterVal Value) Value {
+	var filter *CodongMap
+	if filterVal != nil { filter, _ = filterVal.(*CodongMap) }
 	where, args := filterSQL(filter)
 	q := "DELETE FROM " + table
 	if where != "" { q += " WHERE " + where }
@@ -845,6 +871,87 @@ func goToValue(v interface{}) Value {
 		return m
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+// --- LLM Module ---
+
+func cLlmAsk(args ...Value) Value {
+	// Minimal LLM caller — uses OpenAI-compatible API
+	prompt := ""; model := "gpt-4o"; apiKey := os.Getenv("OPENAI_API_KEY")
+	for _, a := range args {
+		if s, ok := a.(string); ok && prompt == "" { prompt = s }
+		if m, ok := a.(*CodongMap); ok {
+			if v, ok := m.Entries["model"].(string); ok { model = v }
+			if v, ok := m.Entries["api_key"].(string); ok { apiKey = v }
+			if v, ok := m.Entries["prompt"].(string); ok { prompt = v }
+		}
+	}
+	if apiKey == "" {
+		if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" { apiKey = k; model = "claude-3-5-sonnet-20241022" }
+	}
+	if apiKey == "" { return cError("E4005", "no API key", "fix", "export OPENAI_API_KEY") }
+	if prompt == "" { return cError("E1005", "no prompt provided") }
+
+	body := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{{"role": "user", "content": prompt}},
+		"temperature": 0.7,
+		"max_tokens": 4096,
+	}
+	jb, _ := json.Marshal(body)
+	url := "https://api.openai.com/v1/chat/completions"
+	if strings.HasPrefix(model, "claude") {
+		url = "https://api.anthropic.com/v1/messages"
+		body = map[string]interface{}{
+			"model": model, "max_tokens": 4096,
+			"messages": []map[string]string{{"role": "user", "content": prompt}},
+		}
+		jb, _ = json.Marshal(body)
+	}
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(jb))
+	req.Header.Set("Content-Type", "application/json")
+	if strings.HasPrefix(model, "claude") {
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil { return cError("E4001", err.Error()) }
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 { return cError("E4001", string(respBody)) }
+	var result map[string]interface{}
+	json.Unmarshal(respBody, &result)
+	// OpenAI format
+	if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
+		if c, ok := choices[0].(map[string]interface{}); ok {
+			if m, ok := c["message"].(map[string]interface{}); ok {
+				if t, ok := m["content"].(string); ok { return t }
+			}
+		}
+	}
+	// Anthropic format
+	if content, ok := result["content"].([]interface{}); ok && len(content) > 0 {
+		if b, ok := content[0].(map[string]interface{}); ok {
+			if t, ok := b["text"].(string); ok { return t }
+		}
+	}
+	return string(respBody)
+}
+
+func cLlmCountTokens(text string) Value {
+	return float64(len(text)) / 4.0
+}
+
+// --- Dynamic Function Call Helper ---
+
+func cCallFn(fn Value, args ...Value) Value {
+	if f, ok := fn.(func(...Value) Value); ok {
+		return f(args...)
+	}
+	return nil
 }
 
 // Ensure all imports are used

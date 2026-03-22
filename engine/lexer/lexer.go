@@ -447,7 +447,7 @@ func (l *Lexer) skipBlockComment() {
 
 // isLetter reports whether ch is a letter or underscore.
 func isLetter(ch byte) bool {
-	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '$'
 }
 
 // isDigit reports whether ch is a decimal digit.
