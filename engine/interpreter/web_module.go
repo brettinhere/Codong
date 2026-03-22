@@ -21,6 +21,8 @@ type WebModuleObject struct {
 	mu          sync.Mutex
 	routes      []webRoute
 	middlewares []Object
+	mux         *http.ServeMux // shared mux for dynamic route adding
+	interp      *Interpreter
 }
 
 type webRoute struct {
@@ -42,6 +44,15 @@ type ServerObject struct {
 
 func (s *ServerObject) Type() string    { return "server" }
 func (s *ServerObject) Inspect() string { return "<server>" }
+
+// GroupObject represents a route group with a URL prefix.
+type GroupObject struct {
+	server *ServerObject
+	prefix string
+}
+
+func (g *GroupObject) Type() string    { return "group" }
+func (g *GroupObject) Inspect() string { return "<group:" + g.prefix + ">" }
 
 // evalWebModuleMethod dispatches web.xxx() calls.
 func (interp *Interpreter) evalWebModuleMethod(method string) Object {
@@ -86,14 +97,29 @@ func (i *Interpreter) webRegisterRoute(method string, args []Object) Object {
 	if !ok {
 		return newRuntimeError(codongerror.E1002_TYPE_MISMATCH, "path must be a string", "")
 	}
+	// Convert :param to {param} for Go 1.22 ServeMux
+	routePath := path.Value
+	parts := strings.Split(routePath, "/")
+	for idx, p := range parts {
+		if strings.HasPrefix(p, ":") {
+			parts[idx] = "{" + p[1:] + "}"
+		}
+	}
+	routePath = strings.Join(parts, "/")
+
 	handler := args[1]
 	webModuleSingleton.mu.Lock()
 	defer webModuleSingleton.mu.Unlock()
 	webModuleSingleton.routes = append(webModuleSingleton.routes, webRoute{
 		method:  method,
-		pattern: path.Value,
+		pattern: routePath,
 		handler: handler,
 	})
+	// If mux already exists (server running), add route dynamically
+	if webModuleSingleton.mux != nil {
+		pattern := fmt.Sprintf("%s %s", method, routePath)
+		webModuleSingleton.mux.HandleFunc(pattern, i.codongHandlerToHTTP(handler, routePath))
+	}
 	return NULL_OBJ
 }
 
@@ -117,6 +143,8 @@ func (i *Interpreter) webServe(args []Object) Object {
 
 	mux := http.NewServeMux()
 	webModuleSingleton.mu.Lock()
+	webModuleSingleton.mux = mux
+	webModuleSingleton.interp = i
 	routes := make([]webRoute, len(webModuleSingleton.routes))
 	copy(routes, webModuleSingleton.routes)
 	webModuleSingleton.mu.Unlock()
@@ -218,7 +246,11 @@ func (i *Interpreter) buildRequestObject(r *http.Request, pattern string) *MapOb
 			paramOrder = append(paramOrder, name)
 		}
 	}
-	add("param", &MapObject{Entries: paramEntries, Order: paramOrder})
+	paramMap := &MapObject{Entries: paramEntries, Order: paramOrder}
+	// Support both req.param.id (map) and req.param("id") (function)
+	// Store as map — user-defined function entries take priority in member access
+	paramEntries["__map"] = paramMap // self-reference for debugging
+	add("param", paramMap)
 
 	// Body
 	if r.Body != nil {

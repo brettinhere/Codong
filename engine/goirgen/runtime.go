@@ -174,15 +174,10 @@ func toBoolV(v Value) Value {
 	switch b := v.(type) {
 	case bool: return b
 	case string:
-		// Explicit conversion: "true"/"1"/"yes" → true, "false"/"0" → false
-		// Empty string and other strings follow Codong truthy rules
-		switch b {
-		case "true", "1", "yes": return true
-		case "false", "0": return false
-		}
-		return true // all other strings (including "") are truthy per SPEC
-	case float64: return true // 0 is truthy in Codong
+		// Explicit string conversion: only "true"/"1"/"yes" are true
+		return b == "true" || b == "1" || b == "yes"
 	}
+	// All non-nil, non-false values are truthy in Codong (0, "", [], {} included)
 	return true
 }
 

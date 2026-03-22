@@ -811,6 +811,16 @@ func (i *Interpreter) applyFunction(fn Object, args []Object, named ...map[strin
 			args = append(args, namedMap)
 		}
 		return fn.Fn(i, args...)
+	case *MapObject:
+		// MapObject is callable as a getter: m("key") → m.get("key")
+		if len(args) > 0 {
+			if key, ok := args[0].(*StringObject); ok {
+				if val, exists := fn.Entries[key.Value]; exists {
+					return val
+				}
+			}
+		}
+		return NULL_OBJ
 	default:
 		return &ErrorObject{IsRuntime: true, Error: codongerror.New(
 			codongerror.E1004_UNDEFINED_FUNC,
@@ -897,17 +907,47 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 		return i.evalLlmModuleMethod(prop)
 	}
 
-	// server object methods: server.close()
+	// server object methods: server.get/post/put/delete/patch/close/group
 	if srv, ok := obj.(*ServerObject); ok {
-		if prop == "close" {
-			return &BuiltinFunction{
-				Name: "server.close",
-				Fn: func(interp *Interpreter, args ...Object) Object {
-					srv.server.Shutdown(context.Background())
-					return NULL_OBJ
-				},
-			}
+		switch prop {
+		case "close":
+			return &BuiltinFunction{Name: "server.close", Fn: func(interp *Interpreter, args ...Object) Object {
+				srv.server.Shutdown(context.Background())
+				return NULL_OBJ
+			}}
+		case "get", "post", "put", "delete", "patch":
+			method := strings.ToUpper(prop)
+			return &BuiltinFunction{Name: "server." + prop, Fn: func(interp *Interpreter, args ...Object) Object {
+				return i.webRegisterRoute(method, args)
+			}}
+		case "group":
+			return &BuiltinFunction{Name: "server.group", Fn: func(interp *Interpreter, args ...Object) Object {
+				// group returns a prefixed server
+				if len(args) > 0 {
+					if prefix, ok := args[0].(*StringObject); ok {
+						return &GroupObject{server: srv, prefix: prefix.Value}
+					}
+				}
+				return srv
+			}}
 		}
+	}
+
+	// group object: group.get/post etc prepend prefix
+	if grp, ok := obj.(*GroupObject); ok {
+		switch prop {
+		case "get", "post", "put", "delete", "patch":
+			method := strings.ToUpper(prop)
+			return &BuiltinFunction{Name: "group." + prop, Fn: func(interp *Interpreter, args ...Object) Object {
+				if len(args) >= 2 {
+					if path, ok := args[0].(*StringObject); ok {
+						args[0] = &StringObject{Value: grp.prefix + path.Value}
+					}
+				}
+				return i.webRegisterRoute(method, args)
+			}}
+		}
+		_ = grp
 	}
 
 	// Friendly errors for common other-language patterns
