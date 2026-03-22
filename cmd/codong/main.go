@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/codong-lang/codong/engine/interpreter"
 	"github.com/codong-lang/codong/engine/lexer"
 	"github.com/codong-lang/codong/engine/parser"
+	"github.com/codong-lang/codong/engine/runner"
 )
 
 var validProjectName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -28,7 +31,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: codong run <file.cod>")
 			os.Exit(2)
 		}
-		runFile(os.Args[2])
+		if err := runner.Run(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "eval":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: codong eval <file.cod>")
@@ -40,7 +46,21 @@ func main() {
 	case "fmt":
 		fmt.Println("codong fmt: not yet implemented (stage 1)")
 	case "build":
-		fmt.Println("codong build: not yet implemented (stage 4)")
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: codong build <file.cod> [-o output]")
+			os.Exit(2)
+		}
+		input := os.Args[2]
+		output := strings.TrimSuffix(filepath.Base(input), ".cod")
+		for i, arg := range os.Args {
+			if arg == "-o" && i+1 < len(os.Args) {
+				output = os.Args[i+1]
+			}
+		}
+		if err := runner.Build(input, output); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "new":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: codong new <project-name>")
@@ -102,11 +122,6 @@ func evalFile(path string) {
 
 // runFile runs a .cod file through the Go IR path.
 // For stage 1, we use the interpreter as a fallback.
-func runFile(path string) {
-	// Stage 1: run uses the interpreter path as well
-	// Full Go IR generation will be implemented with stdlib modules
-	evalFile(path)
-}
 
 // newProject creates a new Codong project directory.
 func newProject(name string) {
