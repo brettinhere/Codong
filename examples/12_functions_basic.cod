@@ -1,0 +1,27 @@
+// 12 — Functions (Basic)
+fn greet(name) {
+    return "Hello, {name}!"
+}
+print(greet("Ada"))
+
+// Multiple parameters
+fn add(a, b) {
+    return a + b
+}
+print("3 + 4 = {add(3, 4)}")
+
+// Recursion
+fn factorial(n) {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+print("5! = {factorial(5)}")
+
+// No return gives null
+fn say_hi() {
+    print("hi!")
+}
+result = say_hi()
+print("returned: {result}")

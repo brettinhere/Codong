@@ -1,0 +1,30 @@
+// 47 — Curry and Partial Application
+fn curry2(f) {
+    return fn(a) => fn(b) => f(a, b)
+}
+
+fn curry3(f) {
+    return fn(a) => fn(b) => fn(c) => f(a, b, c)
+}
+
+// Curry a 2-arg function
+add = curry2(fn(a, b) => a + b)
+add5 = add(5)
+print("add5(3) = {add5(3)}")
+print("add5(10) = {add5(10)}")
+
+// Curry a 3-arg function
+volume = curry3(fn(l, w, h) => l * w * h)
+slab = volume(10)(20)
+print("slab(3) = {slab(3)}")
+print("slab(5) = {slab(5)}")
+
+// Partial application helper
+fn partial(f, a) {
+    return fn(b) => f(a, b)
+}
+mul = fn(a, b) => a * b
+double = partial(mul, 2)
+triple = partial(mul, 3)
+print("double(7) = {double(7)}")
+print("triple(7) = {triple(7)}")

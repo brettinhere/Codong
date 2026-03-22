@@ -1,0 +1,21 @@
+// 20 — List Slicing
+items = [10, 20, 30, 40, 50]
+
+// slice(start, end) — end is exclusive
+print(items.slice(1, 3).join(" "))
+
+// slice(start) — to end of list
+print(items.slice(2).join(" "))
+
+// Negative index
+print(items.slice(-2).join(" "))
+
+// slice(0) — full copy
+copy = items.slice(0)
+copy.push(60)
+print("original len: {items.len()}")
+print("copy len: {copy.len()}")
+
+// first and last helpers
+print("first: {items.first()}")
+print("last: {items.last()}")

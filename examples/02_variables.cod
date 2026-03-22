@@ -1,0 +1,16 @@
+// 02 — Variables and assignment
+name = "Ada"
+age = 30
+pi = 3.14159
+active = true
+nothing = null
+
+print("name={name} age={age} pi={pi} active={active} nothing={nothing}")
+
+// Reassignment
+age = 31
+print("birthday: {age}")
+
+// Const prevents rebinding
+const MAX = 100
+print("MAX={MAX}")

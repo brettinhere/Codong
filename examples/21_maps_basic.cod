@@ -1,0 +1,26 @@
+// 21 — Maps (Basic)
+user = {name: "Ada", age: 30, role: "engineer"}
+
+// Dot access
+print("name: {user.name}")
+print("age: {user.age}")
+print("role: {user.role}")
+
+// Bracket access with variable key
+key = "name"
+print("by key: {user[key]}")
+
+// Add new key
+user.email = "ada@example.com"
+print("email: {user.email}")
+
+// Non-existent key returns null
+print("missing: {user.phone}")
+
+// keys, values, entries
+print(user.keys().join(" "))
+
+// Iterate entries
+for entry in user.entries() {
+    print("  {entry[0]} => {entry[1]}")
+}

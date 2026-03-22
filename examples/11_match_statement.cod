@@ -1,0 +1,34 @@
+// 11 — Match Statement
+// Match on number
+status = 404
+match status {
+    200 => print("ok")
+    404 => print("not found")
+    500 => print("server error")
+    _ => print("other: {status}")
+}
+
+// Match on string
+role = "admin"
+match role {
+    "admin" => print("full access")
+    "user" => print("limited access")
+    "guest" => print("read only")
+    _ => print("unknown role")
+}
+
+// Match on bool
+debug = true
+match debug {
+    true => print("debug mode on")
+    false => print("debug mode off")
+}
+
+// Match true for condition chains
+score = 85
+match true {
+    score >= 90 => print("A")
+    score >= 80 => print("B")
+    score >= 70 => print("C")
+    _ => print("F")
+}

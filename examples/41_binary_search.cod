@@ -1,0 +1,30 @@
+// 41 — Binary Search
+fn binary_search(list, target) {
+    low = 0
+    high = list.len() - 1
+    while low <= high {
+        sum = low + high
+        mid = (sum - sum % 2) / 2
+        if list[mid] == target { return mid }
+        if list[mid] < target {
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
+    }
+    return -1
+}
+
+sorted = [2, 5, 8, 12, 16, 23, 38, 56, 72, 91]
+s = " "
+print(sorted.join(s))
+
+targets = [23, 91, 2, 50]
+for t in targets {
+    idx = binary_search(sorted, t)
+    if idx >= 0 {
+        print("found {t} at index {idx}")
+    } else {
+        print("{t} not found")
+    }
+}

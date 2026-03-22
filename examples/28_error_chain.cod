@@ -1,0 +1,26 @@
+// 28 — Error Wrapping and Inspection
+fn load_file(path) {
+    return error.new("E_IO", "file not found: {path}")
+}
+
+// Wrap adds context
+fn load_config() {
+    err = load_file("config.toml")
+    return error.wrap(err, "while loading config")
+}
+
+try {
+    load_config()?
+} catch err {
+    print("caught: {err.message}")
+
+    // error.is checks the code
+    code = "E_IO"
+    print("is E_IO: {error.is(err, code)}")
+    code2 = "E_NET"
+    print("is E_NET: {error.is(err, code2)}")
+
+    // error.unwrap gets the inner error
+    inner = error.unwrap(err)
+    print("inner: {inner.message}")
+}

@@ -1,0 +1,27 @@
+// 09 — For Loops
+// range iteration
+for i in range(1, 5) {
+    print("i = {i}")
+}
+
+// list iteration
+fruits = ["apple", "banana", "cherry"]
+for fruit in fruits {
+    print("fruit: {fruit}")
+}
+
+// break exits the loop
+for n in range(0, 100) {
+    if n == 3 {
+        break
+    }
+    print("n = {n}")
+}
+
+// continue skips to next iteration
+for n in range(0, 6) {
+    if n % 2 == 0 {
+        continue
+    }
+    print("odd: {n}")
+}

@@ -1,0 +1,26 @@
+// 08 — If/Else
+x = 7
+
+if x > 10 {
+    print("big")
+} else if x > 5 {
+    print("medium")
+} else {
+    print("small")
+}
+
+// Boolean conditions
+logged_in = true
+if logged_in {
+    print("welcome back")
+}
+
+// Comparison operators
+a = 3
+b = 3
+if a == b {
+    print("{a} equals {b}")
+}
+if a != 5 {
+    print("{a} is not 5")
+}

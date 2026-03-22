@@ -1,0 +1,36 @@
+// 50 — Bank Account (Closures)
+fn make_account(owner, initial) {
+    balance = initial
+    fn deposit(amount) {
+        if amount <= 0 { return error.new("E_AMT", "must be positive") }
+        balance += amount
+        return balance
+    }
+    fn withdraw(amount) {
+        if amount <= 0 { return error.new("E_AMT", "must be positive") }
+        if amount > balance { return error.new("E_FUNDS", "insufficient funds") }
+        balance -= amount
+        return balance
+    }
+    fn get_balance() { return balance }
+    fn get_owner() { return owner }
+    return {deposit: deposit, withdraw: withdraw, balance: get_balance, owner: get_owner}
+}
+
+acct = make_account("Alice", 100)
+print("{acct.owner()} balance: {acct.balance()}")
+print("deposit 50: {acct.deposit(50)}")
+print("withdraw 30: {acct.withdraw(30)}")
+print("balance: {acct.balance()}")
+
+// Error cases
+try {
+    acct.withdraw(200)?
+} catch err {
+    print("error: {err.message}")
+}
+try {
+    acct.deposit(-10)?
+} catch err {
+    print("error: {err.message}")
+}

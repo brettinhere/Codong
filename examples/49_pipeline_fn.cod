@@ -1,0 +1,32 @@
+// 49 — Pipeline Function
+fn pipeline(value, fns) {
+    result = value
+    for f in fns {
+        result = f(result)
+    }
+    return result
+}
+
+// Number pipeline: add 1, double, square
+result = pipeline(3, [
+    fn(x) => x + 1,
+    fn(x) => x * 2,
+    fn(x) => x * x
+])
+print("pipeline(3): {result}")
+
+// String pipeline: trim, upper, add exclamation
+trimmed = pipeline("  hello world  ", [
+    fn(s) => s.trim(),
+    fn(s) => s.upper()
+])
+print("pipeline str: {trimmed}")
+
+// List pipeline: filter evens, double, sort desc
+nums = pipeline([5, 2, 8, 1, 4, 9, 3], [
+    fn(l) => l.filter(fn(x) => x % 2 == 0),
+    fn(l) => l.map(fn(x) => x * 2),
+    fn(l) { l.sort(fn(a, b) => b - a); return l }
+])
+s = " "
+print("pipeline list: {nums.join(s)}")

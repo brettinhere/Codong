@@ -1,0 +1,28 @@
+// 35 — Deep Copy
+fn deep_copy(val) {
+    if type_of(val) == "map" {
+        result = {}
+        for entry in val.entries() {
+            result[entry[0]] = deep_copy(entry[1])
+        }
+        return result
+    }
+    if type_of(val) == "list" {
+        return val.map(fn(item) => deep_copy(item))
+    }
+    return val
+}
+
+// Test: modify copy without affecting original
+original = {name: "Ada", scores: [10, 20, 30], meta: {role: "dev"}}
+copy = deep_copy(original)
+copy.name = "Bob"
+copy.scores.push(40)
+copy.meta.role = "mgr"
+
+print("original name: {original.name}")
+print("copy name: {copy.name}")
+print("original scores len: {original.scores.len()}")
+print("copy scores len: {copy.scores.len()}")
+print("original role: {original.meta.role}")
+print("copy role: {copy.meta.role}")

@@ -1,0 +1,21 @@
+// 36 — Memoize
+fn memoize(f) {
+    cache = {}
+    return fn(x) {
+        key = to_string(x)
+        if cache.has(key) {
+            print("  cache hit: {key}")
+            return cache[key]
+        }
+        result = f(x)
+        cache[key] = result
+        return result
+    }
+}
+
+// Memoize a slow square function
+square = memoize(fn(x) => x * x)
+print("4^2 = {square(4)}")
+print("4^2 = {square(4)}")
+print("5^2 = {square(5)}")
+print("5^2 = {square(5)}")

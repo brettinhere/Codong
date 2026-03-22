@@ -1,0 +1,9 @@
+// 04 — Multiline strings
+name = "Ada"
+html = """
+<div>
+    <h1>Hello {name}</h1>
+    <p>Welcome to Codong</p>
+</div>
+"""
+print(html.trim())

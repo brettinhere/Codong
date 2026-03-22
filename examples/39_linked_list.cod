@@ -1,0 +1,30 @@
+// 39 — Linked List
+fn make_list() {
+    head = null
+    fn prepend(val) { head = {val: val, next: head} }
+    fn to_list() {
+        result = []
+        node = head
+        while node != null {
+            result.push(node.val)
+            node = node.next
+        }
+        return result
+    }
+    fn length() {
+        count = 0; node = head
+        while node != null { count += 1; node = node.next }
+        return count
+    }
+    return {prepend: prepend, to_list: to_list, length: length}
+}
+
+ll = make_list()
+ll.prepend(3); ll.prepend(2); ll.prepend(1)
+print("length: {ll.length()}")
+s = " "
+print(ll.to_list().join(s))
+
+ll.prepend(0)
+print("after prepend 0: {ll.length()}")
+print(ll.to_list().join(s))

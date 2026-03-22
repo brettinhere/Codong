@@ -1,0 +1,37 @@
+// 48 — Retry Pattern
+fn retry(f, max_attempts) {
+    attempt = 1
+    while attempt <= max_attempts {
+        result = f(attempt)
+        if type_of(result) != "error" {
+            return result
+        }
+        print("  attempt {attempt} failed: {result.message}")
+        attempt += 1
+    }
+    return error.new("E_RETRY", "all attempts exhausted")
+}
+
+// Simulate: succeed on attempt 3
+fn flaky_task(attempt) {
+    if attempt < 3 {
+        return error.new("E_FAIL", "not ready yet")
+    }
+    return "success on attempt {attempt}"
+}
+
+print("--- retrying flaky task ---")
+result = retry(flaky_task, 5)
+print("result: {result}")
+
+// Simulate: always fails
+fn always_fail(attempt) {
+    return error.new("E_FAIL", "broken")
+}
+
+print("--- retrying always-fail ---")
+try {
+    retry(always_fail, 3)?
+} catch err {
+    print("gave up: {err.message}")
+}

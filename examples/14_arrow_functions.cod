@@ -1,0 +1,19 @@
+// 14 — Arrow Functions
+double = fn(x) => x * 2
+print("double(5) = {double(5)}")
+
+square = fn(x) => x * x
+print("square(4) = {square(4)}")
+
+// As argument to map
+nums = [1, 2, 3, 4, 5]
+doubled = nums.map(fn(x) => x * 2)
+print(doubled.join(" "))
+
+// As argument to filter
+evens = nums.filter(fn(x) => x % 2 == 0)
+print(evens.join(" "))
+
+// Chaining
+result = nums.filter(fn(x) => x > 2).map(fn(x) => x * 10)
+print(result.join(" "))

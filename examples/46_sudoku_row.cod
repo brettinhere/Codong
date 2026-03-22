@@ -1,0 +1,23 @@
+// 46 — Validate Sudoku Row
+fn valid_row(row) {
+    if row.len() != 9 { return false }
+    seen = {}
+    for n in row {
+        if n < 1 { return false }
+        if n > 9 { return false }
+        key = to_string(n)
+        if seen.has(key) { return false }
+        seen[key] = true
+    }
+    return true
+}
+
+good = [5, 3, 4, 6, 7, 8, 9, 1, 2]
+bad_dup = [5, 3, 4, 6, 7, 8, 9, 1, 5]
+bad_zero = [0, 3, 4, 6, 7, 8, 9, 1, 2]
+short = [1, 2, 3]
+
+print("valid row: {valid_row(good)}")
+print("duplicate: {valid_row(bad_dup)}")
+print("has zero: {valid_row(bad_zero)}")
+print("too short: {valid_row(short)}")

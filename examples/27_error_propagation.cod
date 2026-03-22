@@ -1,0 +1,24 @@
+// 27 — Error Propagation with ?
+fn divide(a, b) {
+    if b == 0 {
+        return error.new("E_MATH", "division by zero")
+    }
+    return a / b
+}
+
+// ? propagates error to caller
+fn half_of_division(a, b) {
+    result = divide(a, b)?
+    return result / 2
+}
+
+// Success case
+print("10/2 halved: {half_of_division(10, 2)}")
+
+// Error case with try/catch
+try {
+    half_of_division(10, 0)?
+} catch err {
+    print("caught: {err.code}")
+    print("message: {err.message}")
+}

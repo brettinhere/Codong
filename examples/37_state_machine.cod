@@ -1,0 +1,22 @@
+// 37 — Traffic Light State Machine
+fn make_traffic_light() {
+    state = "red"
+    fn next() {
+        match state {
+            "red" => state = "green"
+            "green" => state = "yellow"
+            "yellow" => state = "red"
+        }
+        return state
+    }
+    fn current() { return state }
+    return {current: current, next: next}
+}
+
+light = make_traffic_light()
+print("start: {light.current()}")
+n = 0
+while n < 7 {
+    print("  -> {light.next()}")
+    n += 1
+}

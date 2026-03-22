@@ -1,0 +1,27 @@
+// 19 — List Sorting
+// Default sort (ascending, mutates in place)
+nums = [5, 3, 8, 1, 9, 2]
+nums.sort()
+print(nums.join(" "))
+
+// Custom comparator
+nums2 = [5, 3, 8, 1, 9, 2]
+nums2.sort(fn(a, b) => b - a)
+print(nums2.join(" "))
+
+// reverse (mutates in place)
+items = [1, 2, 3, 4]
+items.reverse()
+print(items.join(" "))
+
+// Sort strings
+words = ["banana", "apple", "cherry"]
+words.sort()
+print(words.join(" "))
+
+// Preserve original with slice copy
+original = [3, 1, 2]
+copy = original.slice(0)
+copy.sort()
+print(original.join(" "))
+print(copy.join(" "))

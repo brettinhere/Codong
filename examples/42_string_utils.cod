@@ -1,0 +1,34 @@
+// 42 — String Utilities
+fn capitalize(s) {
+    if s.len() == 0 { return s }
+    first = s.slice(0, 1).upper()
+    rest = s.slice(1)
+    return "{first}{rest}"
+}
+
+fn pad_left(s, width, ch) {
+    while s.len() < width {
+        s = "{ch}{s}"
+    }
+    return s
+}
+
+fn truncate(s, max_len, suffix) {
+    if s.len() <= max_len { return s }
+    cut = s.slice(0, max_len)
+    return "{cut}{suffix}"
+}
+
+// Test capitalize
+print(capitalize("hello world"))
+print(capitalize(""))
+print(capitalize("a"))
+
+// Test pad_left
+print(pad_left("42", 6, "0"))
+print(pad_left("hello", 3, " "))
+
+// Test truncate
+dots = "..."
+print(truncate("a long sentence here", 10, dots))
+print(truncate("short", 10, dots))

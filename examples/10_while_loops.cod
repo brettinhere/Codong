@@ -1,0 +1,19 @@
+// 10 — While Loops
+// countdown
+count = 5
+while count > 0 {
+    print("count: {count}")
+    count -= 1
+}
+print("done")
+
+// while true + break
+x = 0
+while true {
+    x += 1
+    if x > 3 {
+        break
+    }
+    print("x = {x}")
+}
+print("broke out at x = {x}")

@@ -1,0 +1,11 @@
+// 31 — FizzBuzz
+i = 1
+while i <= 20 {
+    match true {
+        i % 15 == 0 => print("FizzBuzz")
+        i % 3 == 0 => print("Fizz")
+        i % 5 == 0 => print("Buzz")
+        _ => print("{i}")
+    }
+    i += 1
+}

@@ -1,0 +1,32 @@
+// 29 — Scope Rules
+// Functions share outer scope (can modify outer variables)
+x = "outer"
+fn change_x() {
+    x = "changed"
+}
+change_x()
+print("after fn: {x}")
+
+// Closures capture parent scope
+fn make_greeting(prefix) {
+    fn greet(name) {
+        return "{prefix}, {name}!"
+    }
+    return greet
+}
+hi = make_greeting("Hi")
+print(hi("Ada"))
+
+// if does NOT create new scope
+y = 10
+if true {
+    y = 20
+}
+print("after if: {y}")
+
+// for loop: pre-declared variables can be modified
+z = 0
+for i in range(0, 3) {
+    z = i
+}
+print("after for: {z}")

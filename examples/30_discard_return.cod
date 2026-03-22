@@ -1,0 +1,20 @@
+// 30 — Discard Return Value
+// _ discards the return value of side-effect functions
+fn log_and_return(msg) {
+    print("LOG: {msg}")
+    return 42
+}
+
+// Discard the return value
+_ = log_and_return("doing work")
+
+// Useful when you only want the side effect
+list = [3, 1, 2]
+_ = list.sort()
+print(list.join(" "))
+
+// _ is also the match wildcard
+match "unknown" {
+    "a" => print("found a")
+    _ => print("no match, using default")
+}

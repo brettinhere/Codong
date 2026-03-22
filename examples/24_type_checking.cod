@@ -1,0 +1,27 @@
+// 24 — Type Checking and Conversion
+// type_of for all types
+s = "hello"
+print("string: {type_of(s)}")
+print("number: {type_of(42)}")
+print("bool: {type_of(true)}")
+print("null: {type_of(null)}")
+l = [1, 2]
+print("list: {type_of(l)}")
+m = {a: 1}
+print("map: {type_of(m)}")
+
+// to_string
+print("to_string: {to_string(42)}")
+print("to_string: {to_string(true)}")
+
+// to_number
+n = to_number("42")
+print("to_number: {n}")
+bad = to_number("abc")
+print("invalid: {bad}")
+
+// to_bool
+t = to_bool("true")
+f = to_bool("false")
+print("to_bool true: {t}")
+print("to_bool false: {f}")

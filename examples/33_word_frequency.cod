@@ -1,0 +1,25 @@
+// 33 — Word Frequency
+words = ["apple", "banana", "apple", "cherry", "banana", "apple", "date", "cherry"]
+freq = {}
+for w in words {
+    if freq.has(w) {
+        freq[w] = freq[w] + 1
+    } else {
+        freq[w] = 1
+    }
+}
+
+// Print frequencies
+for entry in freq.entries() {
+    print("{entry[0]}: {entry[1]}")
+}
+
+// Find most common word
+best = ""; best_count = 0
+for entry in freq.entries() {
+    if entry[1] > best_count {
+        best = entry[0]
+        best_count = entry[1]
+    }
+}
+print("most common: {best} ({best_count})")

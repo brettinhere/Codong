@@ -1,0 +1,40 @@
+// 44 — Field Validator
+fn validate(data, rules) {
+    errors = []
+    for rule in rules {
+        field = rule.field
+        val = data.get(field, null)
+        if rule.has("required") {
+            if val == null {
+                errors.push("{field} is required")
+            }
+        }
+        if val != null {
+            if rule.has("min") {
+                if val < rule.min {
+                    errors.push("{field} must be >= {rule.min}")
+                }
+            }
+            if rule.has("max") {
+                if val > rule.max {
+                    errors.push("{field} must be <= {rule.max}")
+                }
+            }
+        }
+    }
+    return errors
+}
+
+rules = [
+    {field: "name", required: true},
+    {field: "age", required: true, min: 0, max: 150},
+    {field: "email", required: true}
+]
+
+// Valid data
+e1 = validate({name: "Ada", age: 30, email: "ada@test.com"}, rules)
+print("valid errors: {e1.len()}")
+
+// Invalid data
+e2 = validate({age: -5}, rules)
+for e in e2 { print(e) }

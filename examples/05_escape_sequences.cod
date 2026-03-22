@@ -1,0 +1,5 @@
+// 05 — Escape sequences
+print("tab:\there")
+print("newline:\nhere")
+print("quote: \"hello\"")
+print("backslash: C:\\Users\\Ada")

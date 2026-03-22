@@ -1,0 +1,24 @@
+// 13 — Default Parameters and Named Arguments
+fn create_user(name, role = "member") {
+    return {name: name, role: role}
+}
+
+// Uses default
+u1 = create_user("Ada")
+print("{u1.name} is {u1.role}")
+
+// Override default
+u2 = create_user("Bob", "admin")
+print("{u2.name} is {u2.role}")
+
+// Named argument at call site uses :
+u3 = create_user("Eve", role: "editor")
+print("{u3.name} is {u3.role}")
+
+// Multiple defaults
+fn connect(host = "localhost", port = 8080) {
+    return "{host}:{port}"
+}
+print(connect())
+print(connect("0.0.0.0", 3000))
+print(connect(port: 9090))

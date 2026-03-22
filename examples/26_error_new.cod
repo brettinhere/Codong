@@ -1,0 +1,20 @@
+// 26 — Creating Errors with error.new
+fn validate_age(age) {
+    if age < 0 {
+        return error.new("E_VALIDATE", "age cannot be negative",
+            fix: "provide a non-negative number",
+            retry: true
+        )
+    }
+    return age
+}
+
+// Successful case
+print("valid: {validate_age(25)}")
+
+// Error case — access fields
+result = validate_age(-1)
+print("code: {result.code}")
+print("message: {result.message}")
+print("fix: {result.fix}")
+print("retry: {result.retry}")

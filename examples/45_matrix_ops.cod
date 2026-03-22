@@ -1,0 +1,51 @@
+// 45 — Matrix Operations
+fn mat_add(a, b) {
+    result = []
+    i = 0
+    while i < a.len() {
+        row = []
+        j = 0
+        while j < a[i].len() {
+            row.push(a[i][j] + b[i][j])
+            j += 1
+        }
+        result.push(row)
+        i += 1
+    }
+    return result
+}
+
+fn mat_mul(a, b) {
+    result = []
+    i = 0
+    while i < a.len() {
+        row = []
+        j = 0
+        while j < b[0].len() {
+            sum = 0; k = 0
+            while k < a[0].len() {
+                sum += a[i][k] * b[k][j]
+                k += 1
+            }
+            row.push(sum)
+            j += 1
+        }
+        result.push(row)
+        i += 1
+    }
+    return result
+}
+
+fn print_mat(m) {
+    for row in m {
+        s = " "
+        print(row.join(s))
+    }
+}
+
+a = [[1, 2], [3, 4]]
+b = [[5, 6], [7, 8]]
+print("A + B:")
+print_mat(mat_add(a, b))
+print("A * B:")
+print_mat(mat_mul(a, b))

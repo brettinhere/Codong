@@ -1,0 +1,28 @@
+// 43 — Config Reader (dot-path access)
+fn make_config(data) {
+    fn get(path) {
+        dot = "."
+        parts = path.split(dot)
+        current = data
+        for part in parts {
+            if type_of(current) != "map" { return null }
+            if !current.has(part) { return null }
+            current = current[part]
+        }
+        return current
+    }
+    return {get: get, data: data}
+}
+
+config = make_config({
+    app: {name: "MyApp", version: 2},
+    db: {host: "localhost", port: 5432, pool: {min: 2, max: 10}},
+    debug: true
+})
+
+p1 = "app.name"; print("app.name: {config.get(p1)}")
+p2 = "db.host"; print("db.host: {config.get(p2)}")
+p3 = "db.port"; print("db.port: {config.get(p3)}")
+p4 = "db.pool.max"; print("db.pool.max: {config.get(p4)}")
+p5 = "debug"; print("debug: {config.get(p5)}")
+p6 = "app.missing"; print("missing: {config.get(p6)}")

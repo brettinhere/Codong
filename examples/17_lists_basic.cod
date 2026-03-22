@@ -1,0 +1,26 @@
+// 17 — Lists (Basic)
+items = [10, 20, 30, 40, 50]
+print(items.join(" "))
+print("length: {items.len()}")
+
+// Access by index
+print("first: {items[0]}")
+print("third: {items[2]}")
+
+// Negative index (from end)
+print("last: {items[-1]}")
+print("second to last: {items[-2]}")
+
+// Out of bounds returns null
+print("out of bounds: {items[99]}")
+
+// push and pop (mutating)
+items.push(60)
+print(items.join(" "))
+last = items.pop()
+print("popped: {last}")
+
+// shift and unshift (mutating)
+items.unshift(0)
+first = items.shift()
+print("shifted: {first}")

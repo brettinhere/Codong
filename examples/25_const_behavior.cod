@@ -1,0 +1,19 @@
+// 25 — Const Behavior
+// const prevents rebinding
+const MAX = 100
+print("MAX = {MAX}")
+
+// const list can still be mutated via methods
+const items = [1, 2, 3]
+items.push(4)
+print(items.join(" "))
+
+// const map can still be mutated
+const config = {debug: false}
+config.debug = true
+config.version = 2
+print("debug={config.debug} version={config.version}")
+
+// These would ERROR if uncommented:
+// MAX = 200        // cannot assign to const
+// items = [5, 6]   // cannot assign to const

@@ -1,0 +1,23 @@
+// 34 — Data Pipeline
+people = [
+    {name: "Alice", age: 32, dept: "eng"},
+    {name: "Bob", age: 25, dept: "sales"},
+    {name: "Carol", age: 28, dept: "eng"},
+    {name: "Dave", age: 45, dept: "eng"},
+    {name: "Eve", age: 22, dept: "sales"}
+]
+
+// Filter engineers, map to name+age strings, sort by name
+engineers = people.filter(fn(p) => p.dept == "eng")
+names = engineers.map(fn(p) => "{p.name} (age {p.age})")
+names.sort()
+for n in names {
+    print(n)
+}
+
+// Find oldest person
+oldest = people.reduce(fn(acc, p) {
+    if p.age > acc.age { return p }
+    return acc
+}, people[0])
+print("oldest: {oldest.name}, {oldest.age}")

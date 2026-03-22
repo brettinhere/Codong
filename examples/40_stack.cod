@@ -1,0 +1,26 @@
+// 40 — Stack (Closure-based)
+fn make_stack() {
+    items = []
+    fn push(val) { items.push(val) }
+    fn pop() {
+        if items.len() == 0 { return null }
+        return items.pop()
+    }
+    fn peek() {
+        if items.len() == 0 { return null }
+        return items[items.len() - 1]
+    }
+    fn size() { return items.len() }
+    return {push: push, pop: pop, peek: peek, size: size}
+}
+
+s = make_stack()
+s.push(10); s.push(20); s.push(30)
+print("size: {s.size()}")
+print("peek: {s.peek()}")
+print("pop: {s.pop()}")
+print("pop: {s.pop()}")
+print("size: {s.size()}")
+print("peek: {s.peek()}")
+print("pop: {s.pop()}")
+print("pop empty: {s.pop()}")

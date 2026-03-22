@@ -1,5 +1,0 @@
-// Hello World in Codong
-print("Hello, Codong!")
-
-name = "World"
-print("Hello, {name}!")

@@ -1,0 +1,20 @@
+// 32 — Iterative Fibonacci
+fn fibonacci(n) {
+    if n <= 1 { return n }
+    a = 0; b = 1
+    i = 2
+    while i <= n {
+        temp = a + b
+        a = b
+        b = temp
+        i += 1
+    }
+    return b
+}
+
+// Print first 15 Fibonacci numbers
+n = 0
+while n < 15 {
+    print("fib({n}) = {fibonacci(n)}")
+    n += 1
+}

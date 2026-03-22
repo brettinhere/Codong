@@ -1,0 +1,9 @@
+// 06 — Arithmetic operators
+print("add: {2 + 3}")
+print("sub: {10 - 4}")
+print("mul: {6 * 7}")
+print("div: {10 / 3}")
+print("mod: {17 % 5}")
+print("precedence: {2 + 3 * 4}")
+print("parens: {(2 + 3) * 4}")
+print("negative: {-5 + 3}")

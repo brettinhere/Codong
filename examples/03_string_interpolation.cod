@@ -1,0 +1,19 @@
+// 03 — String interpolation
+name = "Codong"
+version = 1
+print("Welcome to {name} v{version}")
+
+// Expressions in interpolation
+a = 10; b = 20
+print("{a} + {b} = {a + b}")
+
+// Method calls
+items = [1, 2, 3]
+print("count: {items.len()}")
+
+// Nested access
+user = {name: "Ada"}
+print("user: {user.name}")
+
+// Bool and null
+print("flag={true} empty={null}")

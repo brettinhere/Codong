@@ -1,0 +1,26 @@
+// 16 — Higher-Order Functions
+// Function as argument
+fn apply(f, x) {
+    return f(x)
+}
+print("apply double: {apply(fn(x) => x * 2, 5)}")
+
+// Compose two functions
+fn compose(f, g) {
+    return fn(x) => f(g(x))
+}
+add1 = fn(x) => x + 1
+times3 = fn(x) => x * 3
+add1_then_times3 = compose(times3, add1)
+print("compose(3*,+1)(4) = {add1_then_times3(4)}")
+
+// Apply a function twice
+fn twice(f, x) {
+    return f(f(x))
+}
+print("twice double 3 = {twice(fn(x) => x * 2, 3)}")
+
+// Reduce with function arg
+nums = [1, 2, 3, 4]
+sum = nums.reduce(fn(acc, x) => acc + x, 0)
+print("sum: {sum}")

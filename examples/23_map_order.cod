@@ -1,0 +1,19 @@
+// 23 — Map Insertion Order
+// Maps preserve insertion order
+m = {}
+m.x = 1
+m.y = 2
+m.z = 3
+m.a = 4
+
+print(m.keys().join(" "))
+print(m.values().join(" "))
+
+// entries also follow insertion order
+for entry in m.entries() {
+    print("  {entry[0]} = {entry[1]}")
+}
+
+// Literal order preserved too
+config = {host: "localhost", port: 8080, debug: true}
+print(config.keys().join(" "))

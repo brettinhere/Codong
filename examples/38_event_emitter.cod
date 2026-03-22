@@ -1,0 +1,27 @@
+// 38 — Event Emitter (Pub/Sub)
+fn make_emitter() {
+    listeners = {}
+    fn on(event, callback) {
+        if !listeners.has(event) {
+            listeners[event] = []
+        }
+        listeners[event].push(callback)
+    }
+    fn emit(event, data) {
+        if listeners.has(event) {
+            for cb in listeners[event] {
+                cb(data)
+            }
+        }
+    }
+    return {on: on, emit: emit}
+}
+
+bus = make_emitter()
+bus.on("greet", fn(name) => print("Hello, {name}!"))
+bus.on("greet", fn(name) => print("Welcome, {name}!"))
+bus.on("farewell", fn(name) => print("Goodbye, {name}!"))
+
+bus.emit("greet", "Alice")
+bus.emit("farewell", "Bob")
+bus.emit("unknown", "nobody")

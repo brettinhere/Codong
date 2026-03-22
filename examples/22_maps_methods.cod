@@ -1,0 +1,31 @@
+// 22 — Map Methods
+m = {a: 1, b: 2, c: 3}
+
+// has — check key existence
+k1 = "a"
+k2 = "z"
+print("has a: {m.has(k1)}")
+print("has z: {m.has(k2)}")
+
+// get with default
+print("get a: {m.get(k1, 0)}")
+print("get z: {m.get(k2, 99)}")
+
+// delete (mutating)
+k3 = "c"
+m.delete(k3)
+print(m.keys().join(" "))
+
+// merge (non-mutating, returns new map)
+extra = {d: 4, e: 5}
+merged = m.merge(extra)
+print(merged.keys().join(" "))
+print(m.keys().join(" "))
+
+// map_values (non-mutating)
+doubled = m.map_values(fn(v) => v * 10)
+print("a*10={doubled.a} b*10={doubled.b}")
+
+// filter (non-mutating)
+big = merged.filter(fn(v) => v > 2)
+print(big.keys().join(" "))
