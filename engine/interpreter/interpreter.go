@@ -690,6 +690,9 @@ func (i *Interpreter) evalIdentifier(node *parser.Identifier, env *Environment) 
 	if node.Value == "http" {
 		return httpModuleSingleton
 	}
+	if node.Value == "llm" {
+		return llmModuleSingleton
+	}
 	// Check built-in functions
 	if builtin, ok := builtins[node.Value]; ok {
 		return builtin
@@ -887,6 +890,11 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 	// http response fields: resp.status, resp.json(), resp.body, etc.
 	if resp, ok := obj.(*HttpResponseObject); ok {
 		return i.evalHttpResponseMemberAccess(resp, prop)
+	}
+
+	// llm module methods: llm.ask(), llm.chat(), llm.embed(), etc.
+	if _, ok := obj.(*LlmModuleObject); ok {
+		return i.evalLlmModuleMethod(prop)
 	}
 
 	// server object methods: server.close()

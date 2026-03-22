@@ -1,0 +1,42 @@
+// 57 — LLM module demonstration
+// Note: requires OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable
+
+// Basic ask — single prompt
+// answer = llm.ask("What is 2+2? Reply with just the number.", model: "gpt-4o")
+// print(answer)
+
+// With system prompt
+// answer = llm.ask("Explain recursion", model: "gpt-4o", system: "You are a concise tutor. Max 2 sentences.")
+// print(answer)
+
+// Multi-turn chat
+// response = llm.chat([
+//     {role: "system", content: "You are a helpful assistant."},
+//     {role: "user", content: "What is Codong?"},
+//     {role: "assistant", content: "Codong is a programming language designed for AI."},
+//     {role: "user", content: "What makes it special?"}
+// ], model: "gpt-4o")
+// print(response)
+
+// Classify text
+// category = llm.classify("I love this product!", model: "gpt-4o", categories: ["positive", "negative", "neutral"])
+// print(category)
+
+// Summarize
+// summary = llm.summarize("Long article text here...", model: "gpt-4o", max_length: "1 sentence")
+// print(summary)
+
+// Translate
+// translated = llm.translate("Hello, how are you?", model: "gpt-4o", to: "Chinese")
+// print(translated)
+
+// Count tokens (rough estimate)
+tokens = llm.count_tokens("Hello, this is a test of the token counter.")
+print("estimated tokens: {tokens}")
+
+// Error handling without API key
+result = llm.ask("test", model: "gpt-4o")
+if type_of(result) == "error" {
+    print("expected error: {result.code}")
+    print("fix: {result.fix}")
+}
