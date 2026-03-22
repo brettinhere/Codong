@@ -40,10 +40,18 @@ func (g *Generator) writef(format string, args ...interface{}) {
 func (g *Generator) genStatement(stmt parser.Statement) {
 	switch s := stmt.(type) {
 	case *parser.ExpressionStatement:
-		g.write(g.genExpr(s.Expression))
+		expr := g.genExpr(s.Expression)
+		// Wrap standalone expressions that might be void calls
+		if strings.HasPrefix(expr, "cPrint(") || strings.HasPrefix(expr, "cPrintV(") {
+			g.write(expr)
+		} else {
+			g.writef("_ = %s", expr)
+		}
 	case *parser.AssignStatement:
 		name := s.Name.Value
-		if g.declared[name] {
+		if name == "_" {
+			g.writef("_ = %s", g.genExpr(s.Value))
+		} else if g.declared[name] {
 			g.writef("%s = %s", name, g.genExpr(s.Value))
 		} else {
 			g.declared[name] = true
@@ -184,7 +192,11 @@ func (g *Generator) genWhile(s *parser.WhileStatement) {
 
 func (g *Generator) genMatch(s *parser.MatchStatement) {
 	subj := g.genExpr(s.Subject)
-	g.writef("_match_subj := %s", subj)
+	if subj == "nil" {
+		g.write("var _match_subj Value = nil")
+	} else {
+		g.writef("var _match_subj Value = %s", subj)
+	}
 	for i, mc := range s.Cases {
 		keyword := "if"
 		if i > 0 {
@@ -324,6 +336,8 @@ func (g *Generator) genIdentifier(name string) string {
 		return "false"
 	case "null":
 		return "nil"
+	case "_":
+		return "_blank"
 	}
 	return name
 }
@@ -372,20 +386,33 @@ func (g *Generator) genCall(e *parser.CallExpression) string {
 		args[i] = g.genExpr(a)
 	}
 
-	// Special cases
+	// Built-in functions — direct call (not cCallFn)
 	switch fn {
 	case "cPrint":
 		if len(args) > 0 {
-			return fmt.Sprintf("cPrint(%s)", args[0])
+			return fmt.Sprintf("cPrintV(%s)", args[0])
 		}
-		return "cPrint(nil)"
+		return "cPrintV(nil)"
 	case "cRange":
 		if len(args) >= 2 {
 			return fmt.Sprintf("cRange(toFloat(%s), toFloat(%s))", args[0], args[1])
 		}
+	case "typeOf":
+		return fmt.Sprintf("typeOf(%s)", args[0])
+	case "toString":
+		return fmt.Sprintf("toString(%s)", args[0])
+	case "toFloat":
+		if len(args) > 0 {
+			return fmt.Sprintf("toFloat(%s)", args[0])
+		}
+	case "toBool":
+		return fmt.Sprintf("toBool(%s)", args[0])
 	}
 
 	// Generic function call — use cCallFn for dynamic dispatch
+	if len(args) == 0 {
+		return fmt.Sprintf("cCallFn(%s)", fn)
+	}
 	return fmt.Sprintf("cCallFn(%s, %s)", fn, strings.Join(args, ", "))
 }
 

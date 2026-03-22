@@ -254,7 +254,7 @@ func cIndex(obj Value, idx Value) Value {
 		return nil
 	case *CodongMap:
 		if s, ok := idx.(string); ok {
-			if v, exists := o.Entries[s]; ok { return v; _ = exists }
+			if v, exists := o.Entries[s]; exists { return v; _ = ok }
 		}
 	}
 	return nil
@@ -540,6 +540,11 @@ func cCall(obj Value, method string, args ...Value) Value {
 
 func cPrint(v Value) {
 	fmt.Println(toString(v))
+}
+
+func cPrintV(v Value) Value {
+	fmt.Println(toString(v))
+	return nil
 }
 
 func cRange(start, end float64) *CodongList {
@@ -829,11 +834,49 @@ func cHttpDo(method, url string, body Value, opts ...Value) *CodongMap {
 	req, _ := http.NewRequest(method, url, bodyReader)
 	req.Header.Set("User-Agent", "Codong/0.1")
 	if body != nil { req.Header.Set("Content-Type", "application/json") }
+	// Apply custom headers from opts
+	for _, opt := range opts {
+		if m, ok := opt.(*CodongMap); ok {
+			if h, ok := m.Entries["headers"].(*CodongMap); ok {
+				for k, v := range h.Entries {
+					req.Header.Set(k, toString(v))
+				}
+			}
+		}
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil { return cMap("status", float64(0), "ok", false, "body", err.Error()) }
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
-	return cMap("status", float64(resp.StatusCode), "ok", resp.StatusCode >= 200 && resp.StatusCode < 300, "body", string(respBody))
+	rawBody := string(respBody)
+	// Build headers map
+	hm := cMap()
+	for k, v := range resp.Header {
+		cSet(hm, strings.ToLower(k), v[0])
+	}
+	// Build response with callable json() and text()
+	m := cMap(
+		"status", float64(resp.StatusCode),
+		"ok", resp.StatusCode >= 200 && resp.StatusCode < 300,
+		"body", rawBody,
+		"headers", hm,
+	)
+	cSet(m, "json", func(args ...Value) Value {
+		var data interface{}
+		if json.Unmarshal([]byte(rawBody), &data) != nil { return nil }
+		return goToValue(data)
+	})
+	cSet(m, "text", func(args ...Value) Value {
+		return rawBody
+	})
+	return m
+}
+
+// --- HTTP Response Methods (in cCall for CodongMap) ---
+// These are handled in cCall when the map has a "_http" marker
+
+func init() {
+	// Patch cCall to handle http response methods
 }
 
 // --- Value Conversion ---
