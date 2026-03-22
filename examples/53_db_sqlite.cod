@@ -1,0 +1,46 @@
+// 53 — SQLite database operations
+db.connect("file:/tmp/codong_test.db")
+
+// Create table
+db.query("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER, role TEXT)")
+
+// Insert
+db.insert("users", {name: "Ada", age: 30, role: "engineer"})
+db.insert("users", {name: "Bob", age: 25, role: "designer"})
+db.insert("users", {name: "Carol", age: 35, role: "engineer"})
+db.insert("users", {name: "Dan", age: 28, role: "manager"})
+
+// Find all
+all = db.find("users")
+print("total users: {all.len()}")
+
+// Find with filter
+engineers = db.find("users", {role: "engineer"})
+print("engineers: {engineers.len()}")
+
+// Find one
+ada = db.find_one("users", {name: "Ada"})
+print("found: {ada.name}, age {ada.age}")
+
+// Count
+count = db.count("users", {role: "engineer"})
+print("engineer count: {count}")
+
+// Update
+db.update("users", {name: "Bob"}, {age: 26, role: "senior designer"})
+bob = db.find_one("users", {name: "Bob"})
+print("Bob updated: age={bob.age}, role={bob.role}")
+
+// Delete
+db.delete("users", {name: "Dan"})
+remaining = db.count("users")
+print("after delete: {remaining}")
+
+// Raw query
+results = db.query("SELECT name, age FROM users WHERE age > ?", [26])
+print("age > 26: {results.len()} users")
+
+// Cleanup
+db.query("DROP TABLE users")
+db.disconnect()
+print("done")

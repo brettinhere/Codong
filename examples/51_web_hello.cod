@@ -1,0 +1,17 @@
+// 51 — Simple web server
+web.get("/", fn(req) => web.text("Hello from Codong!"))
+
+web.get("/json", fn(req) => web.json({message: "hello", version: 1}))
+
+web.get("/greet/{user}", fn(req) {
+    who = req.param.user
+    return web.json({greeting: "Hello, {who}!"})
+})
+
+web.post("/echo", fn(req) {
+    return web.json(req.body)
+})
+
+server = web.serve(port: 3000)
+// Server is now running on http://localhost:3000
+// Press Ctrl+C to stop

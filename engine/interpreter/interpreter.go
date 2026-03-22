@@ -1,12 +1,14 @@
 package interpreter
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/codong-lang/codong/engine/parser"
 	"github.com/codong-lang/codong/stdlib/codongerror"
@@ -164,8 +166,10 @@ func (e *Environment) IsConst(name string) bool {
 const maxCallDepth = 1000
 
 type Interpreter struct {
-	output    []string // captured print() output
-	callDepth int      // current recursion depth
+	output    []string        // captured print() output
+	callDepth int             // current recursion depth
+	mu        sync.Mutex      // protects eval from concurrent HTTP handlers
+	servers   []*ServerObject // active web servers
 }
 
 func New() *Interpreter {
@@ -677,6 +681,12 @@ func (i *Interpreter) evalIdentifier(node *parser.Identifier, env *Environment) 
 	if node.Value == "error" {
 		return errorModuleSingleton
 	}
+	if node.Value == "web" {
+		return webModuleSingleton
+	}
+	if node.Value == "db" {
+		return dbModuleSingleton
+	}
 	// Check built-in functions
 	if builtin, ok := builtins[node.Value]; ok {
 		return builtin
@@ -854,6 +864,29 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 	// error module methods: error.new(), error.wrap(), error.is(), etc.
 	if _, ok := obj.(*ErrorModuleObject); ok {
 		return i.evalErrorModuleMethod(prop)
+	}
+
+	// web module methods: web.get(), web.serve(), web.json(), etc.
+	if _, ok := obj.(*WebModuleObject); ok {
+		return i.evalWebModuleMethod(prop)
+	}
+
+	// db module methods: db.connect(), db.find(), db.insert(), etc.
+	if _, ok := obj.(*DbModuleObject); ok {
+		return i.evalDbModuleMethod(prop)
+	}
+
+	// server object methods: server.close()
+	if srv, ok := obj.(*ServerObject); ok {
+		if prop == "close" {
+			return &BuiltinFunction{
+				Name: "server.close",
+				Fn: func(interp *Interpreter, args ...Object) Object {
+					srv.server.Shutdown(context.Background())
+					return NULL_OBJ
+				},
+			}
+		}
 	}
 
 	// Friendly errors for common other-language patterns

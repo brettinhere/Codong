@@ -95,6 +95,9 @@ func evalFile(path string) {
 		fmt.Fprintln(os.Stderr, errObj.Inspect())
 		os.Exit(1)
 	}
+
+	// Keep process alive if web servers are running
+	interp.WaitForServers()
 }
 
 // runFile runs a .cod file through the Go IR path.
