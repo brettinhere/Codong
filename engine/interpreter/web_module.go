@@ -79,6 +79,14 @@ func (interp *Interpreter) evalWebModuleMethod(method string) Object {
 				return i.webUse(args)
 			case "response":
 				return i.webCustomResponse(args)
+			case "middleware":
+				// Return a namespace map with _type marker
+				return &MapObject{
+					Entries: map[string]Object{
+						"_type": &StringObject{Value: "web_middleware_ns"},
+					},
+					Order: []string{"_type"},
+				}
 			default:
 				return newRuntimeError(codongerror.E3003_ROUTE_ERROR,
 					fmt.Sprintf("unknown web method: %s", method), "")
@@ -191,7 +199,7 @@ func (i *Interpreter) buildRequestObject(r *http.Request, pattern string) *MapOb
 		queryEntries[k] = &StringObject{Value: v[0]}
 		queryOrder = append(queryOrder, k)
 	}
-	add("query", &MapObject{Entries: queryEntries, Order: queryOrder})
+	queryMap := &MapObject{Entries: queryEntries, Order: queryOrder}
 
 	// Headers
 	headerEntries := map[string]Object{}
@@ -239,6 +247,59 @@ func (i *Interpreter) buildRequestObject(r *http.Request, pattern string) *MapOb
 	} else {
 		add("body", NULL_OBJ)
 	}
+
+	// Add req.header(name) as a callable function
+	add("header", &BuiltinFunction{Name: "req.header", Fn: func(interp *Interpreter, args ...Object) Object {
+		if len(args) == 0 {
+			return entries["headers"]
+		}
+		if name, ok := args[0].(*StringObject); ok {
+			hm := entries["headers"].(*MapObject)
+			key := strings.ToLower(name.Value)
+			if v, exists := hm.Entries[key]; exists {
+				return v
+			}
+		}
+		return NULL_OBJ
+	}})
+
+	// Add req.query(name) as a callable function
+	add("query", &BuiltinFunction{Name: "req.query", Fn: func(interp *Interpreter, args ...Object) Object {
+		qm := queryMap
+		if len(args) == 0 {
+			return qm
+		}
+		if name, ok := args[0].(*StringObject); ok {
+			if v, exists := qm.Entries[name.Value]; exists {
+				return v
+			}
+		}
+		return NULL_OBJ
+	}})
+
+	// Add req.query_all() — returns all query params as map
+	add("query_all", &BuiltinFunction{Name: "req.query_all", Fn: func(interp *Interpreter, args ...Object) Object {
+		return queryMap
+	}})
+
+	// Add req.context (for middleware like auth_bearer)
+	ctxEntries := map[string]Object{}
+	ctxOrder := []string{}
+	for k, vs := range r.Header {
+		if strings.HasPrefix(k, "X-Codong-Auth-") {
+			field := strings.ToLower(k[len("X-Codong-Auth-"):])
+			ctxEntries[field] = &StringObject{Value: vs[0]}
+			ctxOrder = append(ctxOrder, field)
+		}
+	}
+	add("context", &MapObject{Entries: ctxEntries, Order: ctxOrder})
+
+	// Client IP
+	ip := r.RemoteAddr
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		ip = fwd
+	}
+	add("ip", &StringObject{Value: ip})
 
 	return &MapObject{Entries: entries, Order: order}
 }
@@ -354,10 +415,15 @@ func (i *Interpreter) webResponseBuilder(respType string, args []Object) Object 
 		order = append(order, "body")
 	}
 
-	// Optional status code from named args (trailing map)
+	// Optional status code: web.json(data, 201) or web.json(data, status: 201)
 	entries["status"] = &NumberObject{Value: 200}
 	order = append(order, "status")
 	if len(args) > 1 {
+		// Second positional arg is status number
+		if n, ok := args[1].(*NumberObject); ok {
+			entries["status"] = n
+		}
+		// Named args in trailing map
 		if m, ok := args[len(args)-1].(*MapObject); ok {
 			if s, exists := m.Entries["status"]; exists {
 				entries["status"] = s
@@ -426,24 +492,153 @@ func (i *Interpreter) webUse(args []Object) Object {
 
 func (i *Interpreter) webCustomResponse(args []Object) Object {
 	if len(args) < 1 {
-		return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT, "web.response requires (status, body)", "")
+		return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT, "web.response requires (data, status, headers)", "")
 	}
+	// web.response(data, status?, headers?)
+	data := args[0]
 	status := 200
-	if n, ok := args[0].(*NumberObject); ok {
-		status = int(n.Value)
+	entries := map[string]Object{
+		"_type": &StringObject{Value: "json"},
+		"data":  data,
 	}
-	var body Object = NULL_OBJ
+	order := []string{"_type", "data", "status"}
 	if len(args) > 1 {
-		body = args[1]
+		if n, ok := args[1].(*NumberObject); ok {
+			status = int(n.Value)
+		}
 	}
-	return &MapObject{
-		Entries: map[string]Object{
-			"_type":  &StringObject{Value: "text"},
-			"status": &NumberObject{Value: float64(status)},
-			"body":   body,
-		},
-		Order: []string{"_type", "status", "body"},
+	entries["status"] = &NumberObject{Value: float64(status)}
+	if len(args) > 2 {
+		if h, ok := args[2].(*MapObject); ok {
+			entries["headers"] = h
+			order = append(order, "headers")
+		}
 	}
+	return &MapObject{Entries: entries, Order: order}
+}
+
+// getMiddlewareFactory returns a middleware constructor function.
+func (i *Interpreter) getMiddlewareFactory(name string) Object {
+	switch name {
+	case "cors":
+		return &BuiltinFunction{Name: "web.middleware.cors", Fn: func(interp *Interpreter, args ...Object) Object {
+			return &MapObject{
+				Entries: map[string]Object{"_mw_type": &StringObject{Value: "cors"}},
+				Order:   []string{"_mw_type"},
+			}
+		}}
+	case "logger":
+		return &BuiltinFunction{Name: "web.middleware.logger", Fn: func(interp *Interpreter, args ...Object) Object {
+			return &MapObject{
+				Entries: map[string]Object{"_mw_type": &StringObject{Value: "logger"}},
+				Order:   []string{"_mw_type"},
+			}
+		}}
+	case "recover":
+		return &BuiltinFunction{Name: "web.middleware.recover", Fn: func(interp *Interpreter, args ...Object) Object {
+			return &MapObject{
+				Entries: map[string]Object{"_mw_type": &StringObject{Value: "recover"}},
+				Order:   []string{"_mw_type"},
+			}
+		}}
+	case "auth_bearer":
+		return &BuiltinFunction{Name: "web.middleware.auth_bearer", Fn: func(interp *Interpreter, args ...Object) Object {
+			var validator Object
+			if len(args) > 0 {
+				validator = args[0]
+			}
+			return &MapObject{
+				Entries: map[string]Object{
+					"_mw_type":  &StringObject{Value: "auth_bearer"},
+					"validator": validator,
+				},
+				Order: []string{"_mw_type", "validator"},
+			}
+		}}
+	}
+	return NULL_OBJ
+}
+
+// applyMiddlewares wraps an http.Handler with registered middlewares.
+func (i *Interpreter) applyMiddlewares(handler http.Handler) http.Handler {
+	webModuleSingleton.mu.Lock()
+	middlewares := make([]Object, len(webModuleSingleton.middlewares))
+	copy(middlewares, webModuleSingleton.middlewares)
+	webModuleSingleton.mu.Unlock()
+
+	h := handler
+	for idx := len(middlewares) - 1; idx >= 0; idx-- {
+		mw := middlewares[idx]
+		if m, ok := mw.(*MapObject); ok {
+			if t, exists := m.Entries["_mw_type"]; exists {
+				if ts, ok := t.(*StringObject); ok {
+					switch ts.Value {
+					case "cors":
+						prev := h
+						h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							w.Header().Set("Access-Control-Allow-Origin", "*")
+							w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+							w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+							if r.Method == "OPTIONS" {
+								w.WriteHeader(204)
+								return
+							}
+							prev.ServeHTTP(w, r)
+						})
+					case "logger":
+						prev := h
+						h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							fmt.Fprintf(os.Stderr, "%s %s\n", r.Method, r.URL.Path)
+							prev.ServeHTTP(w, r)
+						})
+					case "recover":
+						prev := h
+						h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							defer func() {
+								if err := recover(); err != nil {
+									w.Header().Set("Content-Type", "application/json")
+									w.WriteHeader(500)
+									fmt.Fprintf(w, `{"error":"internal server error"}`)
+								}
+							}()
+							prev.ServeHTTP(w, r)
+						})
+					case "auth_bearer":
+						validator := m.Entries["validator"]
+						prev := h
+						h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							auth := r.Header.Get("Authorization")
+							if !strings.HasPrefix(auth, "Bearer ") {
+								w.WriteHeader(401)
+								fmt.Fprint(w, `{"error":"unauthorized"}`)
+								return
+							}
+							token := auth[7:]
+							// Call validator function
+							i.mu.Lock()
+							result := i.applyFunction(validator, []Object{&StringObject{Value: token}})
+							i.mu.Unlock()
+							if result == nil || result == NULL_OBJ || result == FALSE_OBJ {
+								w.WriteHeader(401)
+								fmt.Fprint(w, `{"error":"unauthorized"}`)
+								return
+							}
+							// Store auth result in request context header
+							if rm, ok := result.(*MapObject); ok {
+								for k, v := range rm.Entries {
+									if s, ok := v.(*StringObject); ok {
+										r.Header.Set("X-Codong-Auth-"+k, s.Value)
+									}
+								}
+							}
+							prev.ServeHTTP(w, r)
+						})
+					}
+				}
+			}
+		}
+	}
+	return h
 }
 
 // WaitForServers builds muxes, registers all routes, starts listening, then blocks.
@@ -473,7 +668,8 @@ func (i *Interpreter) WaitForServers() {
 		}
 
 		addr := fmt.Sprintf(":%d", srv.port)
-		srv.server = &http.Server{Addr: addr, Handler: mux}
+		finalHandler := i.applyMiddlewares(mux)
+		srv.server = &http.Server{Addr: addr, Handler: finalHandler}
 
 		go func(s *ServerObject, a string) {
 			fmt.Fprintf(os.Stderr, "Codong server listening on http://localhost%s\n", a)

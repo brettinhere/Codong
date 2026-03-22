@@ -912,7 +912,9 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 		switch prop {
 		case "close":
 			return &BuiltinFunction{Name: "server.close", Fn: func(interp *Interpreter, args ...Object) Object {
-				srv.server.Shutdown(context.Background())
+				if srv.server != nil {
+					srv.server.Shutdown(context.Background())
+				}
 				return NULL_OBJ
 			}}
 		case "get", "post", "put", "delete", "patch":
@@ -920,9 +922,12 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 			return &BuiltinFunction{Name: "server." + prop, Fn: func(interp *Interpreter, args ...Object) Object {
 				return i.webRegisterRoute(method, args)
 			}}
+		case "use":
+			return &BuiltinFunction{Name: "server.use", Fn: func(interp *Interpreter, args ...Object) Object {
+				return i.webUse(args)
+			}}
 		case "group":
 			return &BuiltinFunction{Name: "server.group", Fn: func(interp *Interpreter, args ...Object) Object {
-				// group returns a prefixed server
 				if len(args) > 0 {
 					if prefix, ok := args[0].(*StringObject); ok {
 						return &GroupObject{server: srv, prefix: prefix.Value}
@@ -948,6 +953,15 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 			}}
 		}
 		_ = grp
+	}
+
+	// web.middleware.xxx() — built-in middleware factories
+	if wm, ok := obj.(*MapObject); ok {
+		if t, exists := wm.Entries["_type"]; exists {
+			if ts, ok := t.(*StringObject); ok && ts.Value == "web_middleware_ns" {
+				return i.getMiddlewareFactory(prop)
+			}
+		}
 	}
 
 	// Friendly errors for common other-language patterns

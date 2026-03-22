@@ -337,7 +337,17 @@ func (g *Generator) genExpr(expr parser.Expression) string {
 	case *parser.MapLiteral:
 		kvs := make([]string, 0, len(e.Entries)*2)
 		for _, entry := range e.Entries {
-			kvs = append(kvs, fmt.Sprintf("%q", entry.Key), g.genExpr(entry.Value))
+			// Extract key string: Identifier → name, StringLiteral → value
+			var keyStr string
+			switch k := entry.Key.(type) {
+			case *parser.Identifier:
+				keyStr = k.Value
+			case *parser.StringLiteral:
+				keyStr = k.Value
+			default:
+				keyStr = entry.Key.String()
+			}
+			kvs = append(kvs, fmt.Sprintf("%q", keyStr), g.genExpr(entry.Value))
 		}
 		return fmt.Sprintf("cMap(%s)", strings.Join(kvs, ", "))
 	case *parser.FunctionLiteral:
@@ -483,19 +493,8 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 		}
 	}
 
-	// Server object method call: server.get(path, handler) → route registration
-	switch method {
-	case "get", "post", "put", "delete", "patch":
-		goMethod := strings.ToUpper(method)
-		if len(args) >= 2 {
-			return fmt.Sprintf("cWebRoute(\"%s\", %s, %s)", goMethod, args[0], args[1])
-		}
-	case "group":
-		// server.group("/prefix") — just return a placeholder, routes use full paths
-		if len(args) > 0 {
-			return fmt.Sprintf("cMap(\"_type\", \"group\", \"prefix\", %s)", args[0])
-		}
-	}
+	// Server/group object method calls are handled at runtime by cCall
+	// which checks _type on the map. No special-casing needed here.
 
 	// Object method call: obj.method(args)
 	return fmt.Sprintf("cCall(%s, %q, %s)", obj, method, strings.Join(args, ", "))

@@ -174,8 +174,15 @@ func toBoolV(v Value) Value {
 	switch b := v.(type) {
 	case bool: return b
 	case string:
-		// Explicit string conversion: only "true"/"1"/"yes" are true
-		return b == "true" || b == "1" || b == "yes"
+		// Explicit string conversion:
+		// "true"/"1" → true, "false"/"0" → false, "" → true (empty string is truthy in Codong)
+		// everything else → false
+		switch b {
+		case "true", "1": return true
+		case "false", "0": return false
+		case "": return true
+		default: return false
+		}
 	}
 	// All non-nil, non-false values are truthy in Codong (0, "", [], {} included)
 	return true
@@ -719,7 +726,7 @@ func cWebServe(port int) Value {
 			}
 			// Call handler
 			result := route.handler(reqMap)
-			writeResponse(w, result)
+			writeResponse(w, req, result)
 		})
 	}
 	addr := fmt.Sprintf(":%d", port)
@@ -737,7 +744,7 @@ func cWebServe(port int) Value {
 	return nil
 }
 
-func writeResponse(w http.ResponseWriter, result Value) {
+func writeResponse(w http.ResponseWriter, req *http.Request, result Value) {
 	if m, ok := result.(*CodongMap); ok {
 		rt := ""; if t, ok := m.Entries["_type"].(string); ok { rt = t }
 		status := 200; if s, ok := m.Entries["status"].(float64); ok { status = int(s) }
@@ -757,7 +764,7 @@ func writeResponse(w http.ResponseWriter, result Value) {
 			fmt.Fprint(w, toString(m.Entries["body"]))
 		case "redirect":
 			url := toString(m.Entries["url"])
-			http.Redirect(w, nil, url, status)
+			http.Redirect(w, req, url, status)
 			return
 		default:
 			// Apply custom headers if present
