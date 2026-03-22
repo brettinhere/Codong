@@ -584,6 +584,15 @@ func cCall(obj Value, method string, args ...Value) Value {
 		// User-defined function fields take priority
 		if fn, ok := o.Entries[method]; ok {
 			if f, ok := fn.(func(...Value) Value); ok { return f(args...) }
+			// If the value is a map and we're calling it with args, do map lookup
+			if subMap, ok := fn.(*CodongMap); ok && len(args) > 0 {
+				key := toString(args[0])
+				if v, exists := subMap.Entries[key]; exists { return v }
+				if len(args) > 1 { return args[1] } // default value
+				return nil
+			}
+			// If called with no args, return the value itself
+			if len(args) == 0 { return fn }
 		}
 		return cMapMethod(o, method, args...)
 	case string: return cStrMethod(o, method, args...)
@@ -685,6 +694,17 @@ func cWebServe(port int) Value {
 				}
 			}
 			cSet(reqMap, "param", pm)
+			// Parse headers
+			hm := cMap()
+			for k, v := range req.Header {
+				cSet(hm, strings.ToLower(k), v[0])
+			}
+			cSet(reqMap, "headers", hm)
+			cSet(reqMap, "header", hm) // alias
+			// Client IP
+			ip := req.RemoteAddr
+			if fwd := req.Header.Get("X-Forwarded-For"); fwd != "" { ip = fwd }
+			cSet(reqMap, "ip", ip)
 			// Parse body
 			if req.Body != nil {
 				bodyBytes, _ := io.ReadAll(req.Body)
@@ -735,7 +755,15 @@ func writeResponse(w http.ResponseWriter, result Value) {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(status)
 			fmt.Fprint(w, toString(m.Entries["body"]))
+		case "redirect":
+			url := toString(m.Entries["url"])
+			http.Redirect(w, nil, url, status)
+			return
 		default:
+			// Apply custom headers if present
+			if hdrs, ok := m.Entries["headers"].(*CodongMap); ok {
+				for k, v := range hdrs.Entries { w.Header().Set(k, toString(v)) }
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
 			jb, _ := json.Marshal(valueToGo(result))
@@ -769,11 +797,17 @@ func cDbConnect(dsn string) Value {
 	cleanDSN := dsn
 	if strings.HasPrefix(dsn, "sqlite:///") { cleanDSN = dsn[len("sqlite:///"):] }
 	if strings.HasPrefix(dsn, "sqlite://") { cleanDSN = dsn[len("sqlite://"):] }
+	isMemory := cleanDSN == ":memory:"
+	if isMemory { cleanDSN = fmt.Sprintf("/tmp/codong_%d.db", os.Getpid()) }
 	var err error
 	cDB, err = sql.Open("sqlite", cleanDSN)
 	if err != nil { return cError("E2002", "db connect failed: " + err.Error()) }
+	// MUST set before any queries — single connection for in-memory DBs
+	cDB.SetMaxOpenConns(1)
 	if err := cDB.Ping(); err != nil { return cError("E2002", "connection failed: " + err.Error()) }
-	cDB.Exec("PRAGMA journal_mode=WAL")
+	if !isMemory {
+		cDB.Exec("PRAGMA journal_mode=WAL")
+	}
 	return true
 }
 
@@ -839,13 +873,14 @@ func cDbInsert(table string, dataVal Value) Value {
 }
 
 func cDbFind(table string, filterVal Value) *CodongList {
+	if cDB == nil { cPrint(cError("E2002", "no database connection")); return &CodongList{} }
 	var filter *CodongMap
 	if filterVal != nil { filter, _ = filterVal.(*CodongMap) }
 	where, args := filterSQL(filter)
 	q := "SELECT * FROM " + table
 	if where != "" { q += " WHERE " + where }
 	rows, err := cDB.Query(q, args...)
-	if err != nil { panic(cError("E2003", err.Error())) }
+	if err != nil { cPrint(cError("E2003", err.Error())); return &CodongList{} }
 	defer rows.Close()
 	return rowsToList(rows)
 }
@@ -1155,6 +1190,11 @@ func cLlmCountTokens(text string) Value {
 func cCallFn(fn Value, args ...Value) Value {
 	if f, ok := fn.(func(...Value) Value); ok {
 		return f(args...)
+	}
+	// Try to call as a CodongMap with callable entries (for req.param("id") pattern)
+	if m, ok := fn.(*CodongMap); ok && len(args) > 0 {
+		key := toString(args[0])
+		if v, exists := m.Entries[key]; exists { return v }
 	}
 	return nil
 }
