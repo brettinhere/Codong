@@ -517,7 +517,7 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 		}
 		return fmt.Sprintf("cWebMakeServer(%s)", port)
 	case "json":
-		return fmt.Sprintf("cWebJson(%s)", args[0])
+		return fmt.Sprintf("cWebJson(%s)", strings.Join(args, ", "))
 	case "text":
 		return fmt.Sprintf("cWebText(%s)", args[0])
 	case "html":
@@ -525,11 +525,7 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 	case "redirect":
 		return fmt.Sprintf("cMap(\"_type\", \"redirect\", \"url\", %s, \"status\", float64(302))", args[0])
 	case "response":
-		if len(args) > 1 {
-			return fmt.Sprintf("cMap(\"_type\", \"text\", \"status\", %s, \"body\", %s)", args[0], args[1])
-		}
-	case "use":
-		return fmt.Sprintf("cDiscard(%s)", args[0]) // middleware not implemented in IR yet
+		return fmt.Sprintf("cWebResponse(%s)", strings.Join(args, ", "))
 	}
 	return "nil"
 }
@@ -742,11 +738,13 @@ func (g *Generator) genMemberAccess(e *parser.MemberAccessExpression) string {
 		case "web":
 			switch e.Property.Value {
 			case "json":
-				return "func(args ...Value) Value { return cWebJson(args[0]) }"
+				return "func(args ...Value) Value { return cWebJson(args...) }"
 			case "text":
 				return "func(args ...Value) Value { return cWebText(args[0]) }"
 			case "html":
 				return "func(args ...Value) Value { return cWebHtml(args[0]) }"
+			case "middleware":
+				return "cWebMiddlewareNS"
 			}
 		}
 	}

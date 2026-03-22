@@ -266,6 +266,12 @@ func cGet(obj Value, key string) Value {
 	switch o := obj.(type) {
 	case *CodongMap:
 		if v, ok := o.Entries[key]; ok { return v }
+		// Special: server.middleware returns the middleware namespace
+		if key == "middleware" {
+			if t, ok := o.Entries["_type"].(string); ok && t == "server" {
+				return cWebMiddlewareNS
+			}
+		}
 		return nil
 	case *CodongError:
 		switch key {
@@ -576,8 +582,24 @@ func cCall(obj Value, method string, args ...Value) Value {
 					return cWebRoute(strings.ToUpper(method), args[0], args[1])
 				case "group":
 					if len(args) > 0 { return cMap("_type", "group", "prefix", args[0]) }
+				case "use":
+					if len(args) > 0 { cWebMiddlewares = append(cWebMiddlewares, args[0]) }
+					return nil
 				case "close":
 					return nil
+				}
+			case "web_middleware_ns":
+				switch method {
+				case "cors":
+					return cMap("_mw_type", "cors")
+				case "logger":
+					return cMap("_mw_type", "logger")
+				case "recover":
+					return cMap("_mw_type", "recover")
+				case "auth_bearer":
+					var validator Value
+					if len(args) > 0 { validator = args[0] }
+					return cMap("_mw_type", "auth_bearer", "validator", validator)
 				}
 			case "group":
 				prefix := toString(o.Entries["prefix"])
@@ -644,6 +666,8 @@ func cPropagate(v Value) Value {
 
 var cWebRoutes []struct{ method, pattern string; handler func(...Value) Value }
 var cWebServers []*struct{ port int }
+var cWebMiddlewares []Value
+var cWebMiddlewareNS = &CodongMap{Entries: map[string]interface{}{"_type": "web_middleware_ns"}, Order: []string{"_type"}}
 
 func cWebRoute(method string, pattern Value, handler Value) Value {
 	p := toString(pattern)
@@ -701,9 +725,10 @@ func cWebServe(port int) Value {
 				}
 			}
 			cSet(reqMap, "param", pm)
-			// Parse headers
+			// Parse headers (store both original and lowercase for case-insensitive lookup)
 			hm := cMap()
 			for k, v := range req.Header {
+				cSet(hm, k, v[0])
 				cSet(hm, strings.ToLower(k), v[0])
 			}
 			cSet(reqMap, "headers", hm)
@@ -712,6 +737,17 @@ func cWebServe(port int) Value {
 			ip := req.RemoteAddr
 			if fwd := req.Header.Get("X-Forwarded-For"); fwd != "" { ip = fwd }
 			cSet(reqMap, "ip", ip)
+			// Build context from auth middleware headers
+			ctxMap := cMap()
+			for k, v := range req.Header {
+				if strings.HasPrefix(k, "X-Codong-Auth-") {
+					ctxKey := strings.ToLower(k[len("X-Codong-Auth-"):])
+					cSet(ctxMap, ctxKey, v[0])
+				}
+			}
+			cSet(reqMap, "context", ctxMap)
+			// query_all() returns the full query map
+			cSet(reqMap, "query_all", func(args ...Value) Value { return qm })
 			// Parse body
 			if req.Body != nil {
 				bodyBytes, _ := io.ReadAll(req.Body)
@@ -730,7 +766,64 @@ func cWebServe(port int) Value {
 		})
 	}
 	addr := fmt.Sprintf(":%d", port)
-	server := &http.Server{Addr: addr, Handler: mux}
+	// Apply middlewares
+	var finalHandler http.Handler = mux
+	for idx := len(cWebMiddlewares) - 1; idx >= 0; idx-- {
+		mw := cWebMiddlewares[idx]
+		if m, ok := mw.(*CodongMap); ok {
+			mwType := toString(m.Entries["_mw_type"])
+			prev := finalHandler
+			switch mwType {
+			case "cors":
+				finalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+					if r.Method == "OPTIONS" { w.WriteHeader(204); return }
+					prev.ServeHTTP(w, r)
+				})
+			case "logger":
+				finalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					fmt.Fprintf(os.Stderr, "%s %s\n", r.Method, r.URL.Path)
+					prev.ServeHTTP(w, r)
+				})
+			case "recover":
+				finalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					defer func() {
+						if err := recover(); err != nil {
+							w.Header().Set("Content-Type", "application/json")
+							w.WriteHeader(500)
+							fmt.Fprint(w, "{\"error\":\"internal server error\"}")
+						}
+					}()
+					prev.ServeHTTP(w, r)
+				})
+			case "auth_bearer":
+				validator := m.Entries["validator"]
+				finalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					auth := r.Header.Get("Authorization")
+					if !strings.HasPrefix(auth, "Bearer ") {
+						w.WriteHeader(401)
+						fmt.Fprint(w, "{\"error\":\"unauthorized\"}")
+						return
+					}
+					token := auth[7:]
+					result := cCallFn(validator, token)
+					if result == nil || result == false {
+						w.WriteHeader(401)
+						fmt.Fprint(w, "{\"error\":\"unauthorized\"}")
+						return
+					}
+					// Store auth context in request header for handler access
+					if rm, ok := result.(*CodongMap); ok {
+						for k, v := range rm.Entries { r.Header.Set("X-Codong-Auth-"+k, toString(v)) }
+					}
+					prev.ServeHTTP(w, r)
+				})
+			}
+		}
+	}
+	server := &http.Server{Addr: addr, Handler: finalHandler}
 	fmt.Fprintf(os.Stderr, "Codong server listening on http://localhost%s\n", addr)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -785,14 +878,28 @@ func writeResponse(w http.ResponseWriter, req *http.Request, result Value) {
 	}
 }
 
-func cWebJson(data Value) *CodongMap {
-	return cMap("_type", "json", "data", data, "status", float64(200))
+func cWebJson(args ...Value) *CodongMap {
+	var data Value
+	status := float64(200)
+	if len(args) > 0 { data = args[0] }
+	if len(args) > 1 { status = toFloat(args[1]) }
+	return cMap("_type", "json", "data", data, "status", status)
 }
 func cWebText(body Value) *CodongMap {
 	return cMap("_type", "text", "body", body, "status", float64(200))
 }
 func cWebHtml(body Value) *CodongMap {
 	return cMap("_type", "html", "body", body, "status", float64(200))
+}
+func cWebResponse(args ...Value) *CodongMap {
+	var data Value; status := float64(200)
+	if len(args) > 0 { data = args[0] }
+	if len(args) > 1 { status = toFloat(args[1]) }
+	m := cMap("_type", "json", "data", data, "status", status)
+	if len(args) > 2 {
+		if h, ok := args[2].(*CodongMap); ok { cSet(m, "headers", h) }
+	}
+	return m
 }
 
 // --- DB Module ---
