@@ -172,9 +172,7 @@ func toString(v Value) string {
 	case *CodongMap:
 		return "{...}"
 	case *CodongError:
-		// Errors print as "null" when used as values (e.g., print(fs.read("missing")))
-		// Access error fields via .code, .message, .fix etc.
-		return "null"
+		return s.Error()
 	case func(...Value) Value:
 		return "fn (...)"
 	}
@@ -1263,6 +1261,19 @@ func cWebApplyStatic(m *CodongMap, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+
+		// Check if an API route is registered for this exact path
+		for _, route := range cWebRoutes {
+			rp := route.pattern
+			// Strip Go 1.22 {param} patterns for comparison
+			rp = strings.Split(rp, " ")[0] // in case method is in pattern
+			if rp == r.URL.Path || strings.Contains(rp, "{") {
+				// API route exists — let mux handle it
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
 		urlPath := r.URL.Path
 		if prefix != "" {
 			if !strings.HasPrefix(urlPath, prefix) { next.ServeHTTP(w, r); return }
@@ -1277,21 +1288,15 @@ func cWebApplyStatic(m *CodongMap, next http.Handler) http.Handler {
 		if dotfiles != "allow" {
 			base := filepath.Base(fsPath)
 			if strings.HasPrefix(base, ".") && base != "." {
-				if dotfiles == "deny" { http.Error(w, "forbidden", http.StatusForbidden) } else { next.ServeHTTP(w, r) }
+				if dotfiles == "deny" { http.Error(w, "forbidden", http.StatusForbidden) }
 				return
 			}
 		}
 		info, err := os.Stat(fsPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				// Try API routes first (next handler), then SPA fallback
+				// SPA fallback
 				if spa {
-					// Use a response recorder to check if next handler has a real response
-					rec := &responseRecorder{ResponseWriter: w, statusCode: 0}
-					next.ServeHTTP(rec, r)
-					if rec.statusCode != 0 && rec.statusCode != 404 {
-						return // API route handled it
-					}
 					// API returned 404 or didn't handle — serve SPA index
 					indexPath := filepath.Join(root, indexFile)
 					if ii, e := os.Stat(indexPath); e == nil && !ii.IsDir() {
@@ -1312,21 +1317,33 @@ func cWebApplyStatic(m *CodongMap, next http.Handler) http.Handler {
 	})
 }
 
-// responseRecorder captures the status code to check if a handler handled the request
+// responseRecorder buffers the response to check status before writing
 type responseRecorder struct {
 	http.ResponseWriter
 	statusCode int
+	body       []byte
+	headers    http.Header
 	written    bool
 }
+func newRecorder(w http.ResponseWriter) *responseRecorder {
+	return &responseRecorder{ResponseWriter: w, headers: make(http.Header)}
+}
+func (rr *responseRecorder) Header() http.Header { return rr.headers }
 func (rr *responseRecorder) WriteHeader(code int) {
 	rr.statusCode = code
-	if code != 404 { rr.ResponseWriter.WriteHeader(code) }
 	rr.written = true
 }
 func (rr *responseRecorder) Write(b []byte) (int, error) {
 	if !rr.written { rr.statusCode = 200; rr.written = true }
-	if rr.statusCode == 404 { return len(b), nil } // swallow 404 body
-	return rr.ResponseWriter.Write(b)
+	rr.body = append(rr.body, b...)
+	return len(b), nil
+}
+func (rr *responseRecorder) flush(w http.ResponseWriter) {
+	for k, vals := range rr.headers {
+		for _, v := range vals { w.Header().Add(k, v) }
+	}
+	if rr.statusCode > 0 && rr.statusCode != 200 { w.WriteHeader(rr.statusCode) }
+	w.Write(rr.body)
 }
 
 func cServeStaticFile(w http.ResponseWriter, r *http.Request, path string, info os.FileInfo, maxAge int, useETag bool) {
