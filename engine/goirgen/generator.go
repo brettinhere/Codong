@@ -94,6 +94,10 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 		expr := g.genExpr(s.Expression)
 		if strings.HasPrefix(expr, "cPrint(") || strings.HasPrefix(expr, "cPrintV(") {
 			g.write(expr)
+		} else if strings.HasPrefix(expr, "cPropagate(") {
+			// Standalone ? expression: propagate error (panic) instead of assign
+			inner := expr[len("cPropagate("):len(expr)-1]
+			g.writef("cPropagateStmt(%s)", inner)
 		} else {
 			g.writef("cDiscard(%s)", expr)
 		}

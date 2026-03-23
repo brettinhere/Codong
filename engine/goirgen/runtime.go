@@ -776,13 +776,10 @@ func cRange(start, end float64) *CodongList {
 type cReturnSignal struct{ Value Value }
 
 func cPropagate(v Value) Value {
-	// The ? operator propagates errors up the call stack (like Rust's ?).
-	// If the value is a CodongError, panic with a return signal so the
-	// enclosing function returns the error to its caller.
-	if e, ok := v.(*CodongError); ok {
-		panic(&cReturnSignal{Value: e})
+	// In assignment context (err = expr?), return the error for inspection
+	if _, ok := v.(*CodongError); ok {
+		return v
 	}
-	// Check for map responses with an "error" field (e.g., HTTP responses)
 	if m, ok := v.(*CodongMap); ok {
 		if errVal, ok := m.Entries["error"]; ok {
 			if _, ok := errVal.(*CodongError); ok {
@@ -791,6 +788,13 @@ func cPropagate(v Value) Value {
 		}
 	}
 	return v
+}
+
+func cPropagateStmt(v Value) {
+	// In standalone context (expr?), panic to propagate error up call stack
+	if e, ok := v.(*CodongError); ok {
+		panic(&cReturnSignal{Value: e})
+	}
 }
 
 // --- Web Module ---

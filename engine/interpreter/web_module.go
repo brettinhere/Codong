@@ -1008,6 +1008,19 @@ func (i *Interpreter) staticMiddleware(m *MapObject, next http.Handler) http.Han
 			return
 		}
 
+		// Try API routes first — if the mux has a handler (non-404), use it
+		rec := &responseRecorder{code: 200, header: make(http.Header)}
+		next.ServeHTTP(rec, r)
+		if rec.code != 404 {
+			// API route matched — write recorded response
+			for k, vals := range rec.header {
+				for _, v := range vals { w.Header().Add(k, v) }
+			}
+			w.WriteHeader(rec.code)
+			w.Write(rec.body)
+			return
+		}
+
 		urlPath := r.URL.Path
 
 		// Strip prefix
@@ -1078,6 +1091,17 @@ func (i *Interpreter) staticMiddleware(m *MapObject, next http.Handler) http.Han
 		serveStaticFile(w, r, fsPath, info, maxAge, useETag)
 	})
 }
+
+// responseRecorder captures the response from an http.Handler to check status code
+type responseRecorder struct {
+	code   int
+	header http.Header
+	body   []byte
+}
+
+func (r *responseRecorder) Header() http.Header         { return r.header }
+func (r *responseRecorder) WriteHeader(code int)         { r.code = code }
+func (r *responseRecorder) Write(b []byte) (int, error)  { r.body = append(r.body, b...); return len(b), nil }
 
 func serveStaticFile(w http.ResponseWriter, r *http.Request, path string, info os.FileInfo, maxAge int, useETag bool) {
 	ext := strings.ToLower(filepath.Ext(path))
