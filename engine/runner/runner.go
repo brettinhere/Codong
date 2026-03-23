@@ -20,7 +20,12 @@ func Run(codFile string) error {
 		return fmt.Errorf("cannot read %s: %w", codFile, err)
 	}
 
-	goSource, parseErrors := compile(string(source))
+	sourceDir := filepath.Dir(codFile)
+	if absDir, err := filepath.Abs(sourceDir); err == nil {
+		sourceDir = absDir
+	}
+
+	goSource, parseErrors := compile(string(source), sourceDir)
 	if len(parseErrors) > 0 {
 		for _, e := range parseErrors {
 			fmt.Printf("[E1001_SYNTAX_ERROR] %s\n", e)
@@ -39,7 +44,12 @@ func Build(codFile, outputPath string) error {
 		return fmt.Errorf("cannot read %s: %w", codFile, err)
 	}
 
-	goSource, parseErrors := compile(string(source))
+	sourceDir := filepath.Dir(codFile)
+	if absDir, err := filepath.Abs(sourceDir); err == nil {
+		sourceDir = absDir
+	}
+
+	goSource, parseErrors := compile(string(source), sourceDir)
 	if len(parseErrors) > 0 {
 		for _, e := range parseErrors {
 			fmt.Fprintln(os.Stderr, e)
@@ -50,7 +60,7 @@ func Build(codFile, outputPath string) error {
 	return buildGoSource(goSource, outputPath)
 }
 
-func compile(source string) (string, []string) {
+func compile(source string, sourceDir string) (string, []string) {
 	l := lexer.New(source)
 	p := parser.New(l)
 	program := p.ParseProgram()
@@ -61,7 +71,7 @@ func compile(source string) (string, []string) {
 		}
 		return "", errs
 	}
-	goSource := goirgen.Generate(program)
+	goSource := goirgen.Generate(program, sourceDir)
 	return goSource, nil
 }
 

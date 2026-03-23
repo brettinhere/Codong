@@ -9,7 +9,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"database/sql"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -635,7 +639,30 @@ func cCall(obj Value, method string, args ...Value) Value {
 				case "group":
 					if len(args) > 0 { return cMap("_type", "group", "prefix", args[0]) }
 				case "use":
-					if len(args) > 0 { cWebMiddlewares = append(cWebMiddlewares, args[0]) }
+					if len(args) > 0 {
+						// Handle server.use("/prefix", middleware)
+						if len(args) >= 2 {
+							if prefix, ok := args[0].(string); ok {
+								if mw, ok := args[1].(*CodongMap); ok {
+									cSet(mw, "prefix", prefix)
+								}
+								cWebMiddlewares = append(cWebMiddlewares, args[1])
+								return nil
+							}
+						}
+						cWebMiddlewares = append(cWebMiddlewares, args[0])
+					}
+					return nil
+				case "ws":
+					if len(args) >= 2 { return cWebWsRoute(args[0], args[1]) }
+					return nil
+				case "ws_broadcast":
+					if len(args) >= 2 {
+						msg := toString(args[1])
+						cWsHub.mu.RLock()
+						for _, ch := range cWsHub.conns { select { case ch <- msg: default: } }
+						cWsHub.mu.RUnlock()
+					}
 					return nil
 				case "close":
 					return nil
@@ -652,6 +679,10 @@ func cCall(obj Value, method string, args ...Value) Value {
 					var validator Value
 					if len(args) > 0 { validator = args[0] }
 					return cMap("_mw_type", "auth_bearer", "validator", validator)
+				case "multipart":
+					return cMap("_mw_type", "multipart")
+				case "session":
+					return cMap("_mw_type", "session")
 				}
 			case "group":
 				prefix := toString(o.Entries["prefix"])
@@ -816,6 +847,14 @@ func cWebServe(port int) Value {
 			}
 			cSet(reqMap, "headers", hm)
 			cSet(reqMap, "header", hm) // alias
+			// Cookies
+			cm := cMap()
+			for _, c := range req.Cookies() { cSet(cm, c.Name, c.Value) }
+			cSet(reqMap, "cookies", cm)
+			cSet(reqMap, "cookie", func(args ...Value) Value {
+				if len(args) > 0 { if v, ok := cm.Entries[toString(args[0])]; ok { return v } }
+				return nil
+			})
 			// Client IP
 			ip := req.RemoteAddr
 			if fwd := req.Header.Get("X-Forwarded-For"); fwd != "" { ip = fwd }
@@ -841,8 +880,11 @@ func cWebServe(port int) Value {
 			cSet(reqMap, "context", ctxMap)
 			// query_all() returns the full query map
 			cSet(reqMap, "query_all", func(args ...Value) Value { return qm })
-			// Parse body
-			if req.Body != nil {
+			// Parse body (with multipart support)
+			contentType := req.Header.Get("Content-Type")
+			if strings.HasPrefix(contentType, "multipart/form-data") {
+				cParseMultipartBody(req, reqMap)
+			} else if req.Body != nil {
 				bodyBytes, _ := io.ReadAll(req.Body)
 				if len(bodyBytes) > 0 {
 					var jdata interface{}
@@ -857,6 +899,11 @@ func cWebServe(port int) Value {
 			result := route.handler(reqMap)
 			writeResponse(w, req, result)
 		})
+	}
+	// Register WebSocket routes
+	for _, ws := range cWebWSRoutes {
+		wsHandler := ws.handler
+		mux.HandleFunc(ws.pattern, cWebWSUpgradeHandler(wsHandler))
 	}
 	addr := fmt.Sprintf(":%d", port)
 	// Apply middlewares
@@ -875,6 +922,8 @@ func cWebServe(port int) Value {
 					if r.Method == "OPTIONS" { w.WriteHeader(204); return }
 					prev.ServeHTTP(w, r)
 				})
+			case "static":
+				finalHandler = cWebApplyStatic(m, finalHandler)
 			case "logger":
 				finalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					fmt.Fprintf(os.Stderr, "%s %s\n", r.Method, r.URL.Path)
@@ -979,7 +1028,11 @@ func cWebJson(args ...Value) *CodongMap {
 	status := float64(200)
 	if len(args) > 0 { data = args[0] }
 	if len(args) > 1 { status = toFloat(args[1]) }
-	return cMap("_type", "json", "data", data, "status", status)
+	m := cMap("_type", "json", "data", data, "status", status)
+	if len(args) > 2 {
+		if h, ok := args[2].(*CodongMap); ok { cSet(m, "headers", h) }
+	}
+	return m
 }
 func cWebText(body Value) *CodongMap {
 	return cMap("_type", "text", "body", body, "status", float64(200))
@@ -996,6 +1049,343 @@ func cWebResponse(args ...Value) *CodongMap {
 		if h, ok := args[2].(*CodongMap); ok { cSet(m, "headers", h) }
 	}
 	return m
+}
+
+// --- web.static() ---
+
+var cWebStaticMiddlewares []Value
+
+var cDefaultMIMETypes = map[string]string{
+	".html":  "text/html; charset=utf-8",
+	".htm":   "text/html; charset=utf-8",
+	".css":   "text/css; charset=utf-8",
+	".js":    "application/javascript; charset=utf-8",
+	".mjs":   "application/javascript; charset=utf-8",
+	".json":  "application/json; charset=utf-8",
+	".xml":   "application/xml; charset=utf-8",
+	".txt":   "text/plain; charset=utf-8",
+	".md":    "text/markdown; charset=utf-8",
+	".png":   "image/png",
+	".jpg":   "image/jpeg",
+	".jpeg":  "image/jpeg",
+	".gif":   "image/gif",
+	".svg":   "image/svg+xml",
+	".ico":   "image/x-icon",
+	".webp":  "image/webp",
+	".avif":  "image/avif",
+	".mp4":   "video/mp4",
+	".webm":  "video/webm",
+	".mp3":   "audio/mpeg",
+	".wav":   "audio/wav",
+	".ogg":   "audio/ogg",
+	".pdf":   "application/pdf",
+	".zip":   "application/zip",
+	".gz":    "application/gzip",
+	".tar":   "application/x-tar",
+	".woff":  "font/woff",
+	".woff2": "font/woff2",
+	".ttf":   "font/ttf",
+	".eot":   "application/vnd.ms-fontobject",
+	".wasm":  "application/wasm",
+	".map":   "application/json",
+}
+
+func cWebStatic(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	rootDir := toString(args[0])
+	m := cMap("_mw_type", "static", "root_dir", rootDir, "spa", false, "index", "index.html", "max_age", float64(0), "dotfiles", "deny", "etag", true)
+	if len(args) > 1 {
+		if opts, ok := args[1].(*CodongMap); ok {
+			if v, exists := opts.Entries["spa"]; exists { cSet(m, "spa", v) }
+			if v, exists := opts.Entries["index"]; exists { cSet(m, "index", v) }
+			if v, exists := opts.Entries["max_age"]; exists { cSet(m, "max_age", v) }
+			if v, exists := opts.Entries["dotfiles"]; exists { cSet(m, "dotfiles", v) }
+			if v, exists := opts.Entries["etag"]; exists { cSet(m, "etag", v) }
+		}
+	}
+	return m
+}
+
+func cWebApplyStatic(m *CodongMap, next http.Handler) http.Handler {
+	rootDir := toString(m.Entries["root_dir"])
+	prefix := toString(m.Entries["prefix"])
+	if prefix == "null" { prefix = "" }
+	spa := toBool(m.Entries["spa"])
+	indexFile := toString(m.Entries["index"])
+	if indexFile == "null" { indexFile = "index.html" }
+	maxAge := int(toFloat(m.Entries["max_age"]))
+	dotfiles := toString(m.Entries["dotfiles"])
+	if dotfiles == "null" { dotfiles = "deny" }
+	useETag := toBool(m.Entries["etag"])
+
+	root := rootDir
+	if !filepath.IsAbs(root) {
+		wd, _ := os.Getwd()
+		root = filepath.Join(wd, root)
+	}
+	root = filepath.Clean(root)
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			next.ServeHTTP(w, r)
+			return
+		}
+		urlPath := r.URL.Path
+		if prefix != "" {
+			if !strings.HasPrefix(urlPath, prefix) { next.ServeHTTP(w, r); return }
+			urlPath = strings.TrimPrefix(urlPath, prefix)
+			if urlPath == "" { urlPath = "/" }
+		}
+		fsPath := filepath.Clean(filepath.Join(root, filepath.FromSlash(urlPath)))
+		if !strings.HasPrefix(fsPath, root) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if dotfiles != "allow" {
+			base := filepath.Base(fsPath)
+			if strings.HasPrefix(base, ".") && base != "." {
+				if dotfiles == "deny" { http.Error(w, "forbidden", http.StatusForbidden) } else { next.ServeHTTP(w, r) }
+				return
+			}
+		}
+		info, err := os.Stat(fsPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				if spa {
+					indexPath := filepath.Join(root, indexFile)
+					if ii, e := os.Stat(indexPath); e == nil && !ii.IsDir() {
+						cServeStaticFile(w, r, indexPath, ii, maxAge, useETag)
+						return
+					}
+				}
+				next.ServeHTTP(w, r); return
+			}
+			http.Error(w, "internal server error", 500); return
+		}
+		if info.IsDir() {
+			ip := filepath.Join(fsPath, indexFile)
+			if ii, e := os.Stat(ip); e == nil && !ii.IsDir() { cServeStaticFile(w, r, ip, ii, maxAge, useETag); return }
+			next.ServeHTTP(w, r); return
+		}
+		cServeStaticFile(w, r, fsPath, info, maxAge, useETag)
+	})
+}
+
+func cServeStaticFile(w http.ResponseWriter, r *http.Request, path string, info os.FileInfo, maxAge int, useETag bool) {
+	ext := strings.ToLower(filepath.Ext(path))
+	ct := "application/octet-stream"
+	if mime, ok := cDefaultMIMETypes[ext]; ok { ct = mime }
+	w.Header().Set("Content-Type", ct)
+	if maxAge > 0 { w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", maxAge)) } else { w.Header().Set("Cache-Control", "no-cache") }
+	if useETag {
+		etag := fmt.Sprintf("%c%x-%x%c", '"', info.ModTime().UnixNano(), info.Size(), '"')
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag { w.WriteHeader(304); return }
+	}
+	http.ServeFile(w, r, path)
+}
+
+// --- web.set_cookie / web.delete_cookie ---
+
+func cWebSetCookie(args ...Value) Value {
+	if len(args) < 2 { return nil }
+	name := toString(args[0])
+	value := toString(args[1])
+	parts := []string{fmt.Sprintf("%s=%s", name, value)}
+	path := "/"; httpOnly := true; secure := false; sameSite := "Lax"; cookieMaxAge := 0
+	if len(args) > 2 {
+		if opts, ok := args[2].(*CodongMap); ok {
+			if v, exists := opts.Entries["path"]; exists { path = toString(v) }
+			if v, exists := opts.Entries["domain"]; exists { d := toString(v); if d != "" && d != "null" { parts = append(parts, "Domain="+d) } }
+			if v, exists := opts.Entries["max_age"]; exists { cookieMaxAge = int(toFloat(v)) }
+			if v, exists := opts.Entries["http_only"]; exists { httpOnly = toBool(v) }
+			if v, exists := opts.Entries["secure"]; exists { secure = toBool(v) }
+			if v, exists := opts.Entries["same_site"]; exists { sameSite = toString(v) }
+		}
+	}
+	parts = append(parts, "Path="+path)
+	if cookieMaxAge > 0 { parts = append(parts, fmt.Sprintf("Max-Age=%d", cookieMaxAge)) }
+	if httpOnly { parts = append(parts, "HttpOnly") }
+	if secure { parts = append(parts, "Secure") }
+	switch strings.ToLower(sameSite) {
+	case "strict": parts = append(parts, "SameSite=Strict")
+	case "none": parts = append(parts, "SameSite=None")
+	default: parts = append(parts, "SameSite=Lax")
+	}
+	headerVal := strings.Join(parts, "; ")
+	result := cMap()
+	if len(args) > 3 {
+		if existing, ok := args[3].(*CodongMap); ok {
+			for _, k := range existing.Order { cSet(result, k, existing.Entries[k]) }
+		}
+	}
+	cSet(result, "Set-Cookie", headerVal)
+	return result
+}
+
+func cWebDeleteCookie(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	name := toString(args[0])
+	hdr := fmt.Sprintf("%s=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT", name)
+	return cMap("Set-Cookie", hdr)
+}
+
+// --- Multipart parsing for request body ---
+
+func cParseMultipartBody(req *http.Request, reqMap *CodongMap) {
+	mr, err := req.MultipartReader()
+	if err != nil { cSet(reqMap, "body", nil); cSet(reqMap, "files", cMap()); return }
+	filesMap := cMap()
+	bodyMap := cMap()
+	var tmpFiles []string
+	for {
+		part, err := mr.NextPart()
+		if err != nil { break }
+		fieldName := part.FormName()
+		filename := part.FileName()
+		if filename == "" {
+			data, _ := io.ReadAll(io.LimitReader(part, 1<<20))
+			cSet(bodyMap, fieldName, string(data))
+			part.Close()
+			continue
+		}
+		tmpFile, err := os.CreateTemp("", "codong-upload-*")
+		if err != nil { part.Close(); continue }
+		written, _ := io.Copy(tmpFile, io.LimitReader(part, 10*1024*1024+1))
+		tmpFile.Close()
+		part.Close()
+		if written > 10*1024*1024 { os.Remove(tmpFile.Name()); continue }
+		tmpFiles = append(tmpFiles, tmpFile.Name())
+		ext := filepath.Ext(filename)
+		ct := part.Header.Get("Content-Type")
+		if ct == "" { ct = "application/octet-stream" }
+		fileObj := cMap("field_name", fieldName, "filename", filepath.Base(filename), "tmp_path", tmpFile.Name(), "size", float64(written), "content_type", ct, "mime", ct, "extension", ext)
+		cSet(filesMap, fieldName, fileObj)
+	}
+	// Add get() to files
+	fsCopy := filesMap
+	cSet(filesMap, "get", func(args ...Value) Value {
+		if len(args) > 0 { if v, ok := fsCopy.Entries[toString(args[0])]; ok { return v } }
+		return nil
+	})
+	if len(bodyMap.Order) > 0 { cSet(reqMap, "body", bodyMap) } else { cSet(reqMap, "body", nil) }
+	cSet(reqMap, "files", filesMap)
+	// files_list and files_all
+	cSet(reqMap, "files_list", func(args ...Value) Value { return cList() })
+	cSet(reqMap, "files_all", func(args ...Value) Value { return cList() })
+}
+
+// --- WebSocket support ---
+
+const cWsMagicGUID = "258EAFA5-E914-47DA-95CA-5AB5DC11885E"
+var cWsIDCounter int64
+var cWsIDMu sync.Mutex
+var cWsHub = struct{
+	mu sync.RWMutex
+	conns map[string]chan string
+}{conns: make(map[string]chan string)}
+
+func cNextWSID() string {
+	cWsIDMu.Lock(); defer cWsIDMu.Unlock()
+	cWsIDCounter++
+	return fmt.Sprintf("ws-%d-%d", time.Now().UnixMilli(), cWsIDCounter)
+}
+
+var cWebWSRoutes []struct{ pattern string; handler func(...Value) Value }
+
+func cWebWsRoute(pattern Value, handler Value) Value {
+	p := toString(pattern)
+	fn := handler.(func(...Value) Value)
+	cWebWSRoutes = append(cWebWSRoutes, struct{ pattern string; handler func(...Value) Value }{p, fn})
+	return nil
+}
+
+func cWebWSUpgradeHandler(handler func(...Value) Value) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.ToLower(r.Header.Get("Upgrade")) != "websocket" {
+			http.Error(w, "expected websocket upgrade", 400); return
+		}
+		key := r.Header.Get("Sec-WebSocket-Key")
+		if key == "" { http.Error(w, "missing Sec-WebSocket-Key", 400); return }
+		h := sha1.New(); h.Write([]byte(key + cWsMagicGUID))
+		acceptKey := base64.StdEncoding.EncodeToString(h.Sum(nil))
+		hj, ok := w.(http.Hijacker)
+		if !ok { http.Error(w, "websocket not supported", 500); return }
+		netConn, rw, err := hj.Hijack()
+		if err != nil { http.Error(w, err.Error(), 500); return }
+		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + acceptKey + "\r\n\r\n"
+		netConn.Write([]byte(resp))
+
+		connID := cNextWSID()
+		sendCh := make(chan string, 64)
+		done := make(chan struct{})
+		handlers := cMap()
+		ctxMap := cMap()
+		connObj := cMap("id", connID, "context", ctxMap)
+		cSet(connObj, "send", func(args ...Value) Value {
+			if len(args) > 0 { select { case sendCh <- toString(args[0]): default: } }
+			return nil
+		})
+		cSet(connObj, "close", func(args ...Value) Value { select { case <-done: default: close(done) }; return nil })
+		cSet(connObj, "on", func(args ...Value) Value {
+			if len(args) >= 2 { cSet(handlers, toString(args[0]), args[1]) }; return nil
+		})
+		cSet(connObj, "query", func(args ...Value) Value {
+			if len(args) > 0 { v := r.URL.Query().Get(toString(args[0])); if v != "" { return v } }; return nil
+		})
+		cSet(connObj, "header", func(args ...Value) Value {
+			if len(args) > 0 { v := r.Header.Get(toString(args[0])); if v != "" { return v } }; return nil
+		})
+		cWsHub.mu.Lock(); cWsHub.conns[connID] = sendCh; cWsHub.mu.Unlock()
+		handler(connObj)
+		// Writer goroutine
+		go func() {
+			for { select { case msg := <-sendCh: cWsWriteTextFrame(netConn, msg); case <-done: return } }
+		}()
+		// Reader loop
+		reader := bufio.NewReader(rw)
+		for {
+			msg, opcode, err := cWsReadFrame(reader)
+			if err != nil { break }
+			switch opcode {
+			case 0x1:
+				if fn, ok := handlers.Entries["message"]; ok { if f, ok := fn.(func(...Value) Value); ok { f(msg) } }
+			case 0x8: cWsWriteFrame(netConn, 0x8, []byte{}); goto cleanup
+			case 0x9: cWsWriteFrame(netConn, 0xA, []byte(msg))
+			}
+		}
+	cleanup:
+		if fn, ok := handlers.Entries["close"]; ok { if f, ok := fn.(func(...Value) Value); ok { f() } }
+		cWsHub.mu.Lock(); delete(cWsHub.conns, connID); cWsHub.mu.Unlock()
+		select { case <-done: default: close(done) }
+		netConn.Close()
+	}
+}
+
+func cWsReadFrame(reader *bufio.Reader) (string, byte, error) {
+	b1, err := reader.ReadByte(); if err != nil { return "", 0, err }
+	b2, err := reader.ReadByte(); if err != nil { return "", 0, err }
+	opcode := b1 & 0x0F; masked := (b2 & 0x80) != 0; length := int64(b2 & 0x7F)
+	if length == 126 { var lb [2]byte; io.ReadFull(reader, lb[:]); length = int64(binary.BigEndian.Uint16(lb[:])) }
+	if length == 127 { var lb [8]byte; io.ReadFull(reader, lb[:]); length = int64(binary.BigEndian.Uint64(lb[:])) }
+	var mask [4]byte
+	if masked { io.ReadFull(reader, mask[:]) }
+	payload := make([]byte, length)
+	io.ReadFull(reader, payload)
+	if masked { for i := range payload { payload[i] ^= mask[i%4] } }
+	return string(payload), opcode, nil
+}
+
+func cWsWriteTextFrame(conn interface{ Write([]byte) (int, error) }, msg string) { cWsWriteFrame(conn, 0x1, []byte(msg)) }
+
+func cWsWriteFrame(conn interface{ Write([]byte) (int, error) }, opcode byte, payload []byte) {
+	frame := []byte{0x80 | opcode}
+	l := len(payload)
+	if l < 126 { frame = append(frame, byte(l))
+	} else if l < 65536 { frame = append(frame, 126); lb := make([]byte, 2); binary.BigEndian.PutUint16(lb, uint16(l)); frame = append(frame, lb...)
+	} else { frame = append(frame, 127); lb := make([]byte, 8); binary.BigEndian.PutUint64(lb, uint64(l)); frame = append(frame, lb...) }
+	frame = append(frame, payload...)
+	conn.Write(frame)
 }
 
 // --- DB Module ---

@@ -2,8 +2,11 @@ package goirgen
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/codong-lang/codong/engine/lexer"
 	"github.com/codong-lang/codong/engine/parser"
 )
 
@@ -14,11 +17,18 @@ type Generator struct {
 	declared    map[string]bool // tracks declared variables
 	consts      map[string]bool // tracks const bindings
 	inTryCatch  bool            // true when generating code inside a try/catch block
+	sourceDir   string          // directory of the main .cod file (for resolving imports)
+	imported    map[string]bool // tracks already imported files to prevent cycles
 }
 
 // Generate produces a complete Go program from a Codong AST.
-func Generate(program *parser.Program) string {
-	g := &Generator{declared: map[string]bool{}, consts: map[string]bool{}}
+// sourceDir is used to resolve import paths (optional, defaults to cwd).
+func Generate(program *parser.Program, sourceDirs ...string) string {
+	srcDir := ""
+	if len(sourceDirs) > 0 {
+		srcDir = sourceDirs[0]
+	}
+	g := &Generator{declared: map[string]bool{}, consts: map[string]bool{}, sourceDir: srcDir, imported: map[string]bool{}}
 	g.output.WriteString(RuntimeSource)
 	g.output.WriteString("\n\nfunc main() {\n")
 	g.indent = 1
@@ -163,11 +173,105 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 		}
 	case *parser.GoStatement:
 		g.writef("go func() { %s }()", g.genExpr(s.Call))
-	case *parser.ImportStatement, *parser.ExportStatement:
-		// no-op in compiled mode
+	case *parser.ImportStatement:
+		g.genImport(s)
+	case *parser.ExportStatement:
+		// Export is transparent in compiled mode — just compile the inner statement
+		if s.Statement != nil {
+			g.genStatement(s.Statement)
+		}
 	case *parser.TypeDeclaration, *parser.InterfaceDeclaration:
 		// no-op
 	}
+}
+
+// genImport handles import statements by reading, parsing, and inlining the imported .cod file.
+// Only exported (via `export` keyword) functions/consts are made available by their name.
+func (g *Generator) genImport(s *parser.ImportStatement) {
+	if g.sourceDir == "" {
+		g.write("// import: source directory not set, skipping " + s.Path)
+		return
+	}
+
+	// Resolve the import path relative to sourceDir
+	importPath := s.Path
+	if !filepath.IsAbs(importPath) {
+		importPath = filepath.Join(g.sourceDir, importPath)
+	}
+	importPath = filepath.Clean(importPath)
+
+	// Prevent circular imports
+	if g.imported[importPath] {
+		return
+	}
+	g.imported[importPath] = true
+
+	// Read the imported file
+	source, err := os.ReadFile(importPath)
+	if err != nil {
+		g.writef("// import error: cannot read %s: %v", s.Path, err)
+		return
+	}
+
+	// Parse the imported file
+	l := lexer.New(string(source))
+	p := parser.New(l)
+	program := p.ParseProgram()
+	if len(p.Errors()) > 0 {
+		g.writef("// import error: parse errors in %s", s.Path)
+		return
+	}
+
+	// Collect exported names
+	exportedNames := map[string]bool{}
+	for _, stmt := range program.Statements {
+		if es, ok := stmt.(*parser.ExportStatement); ok {
+			switch inner := es.Statement.(type) {
+			case *parser.FunctionDefinition:
+				exportedNames[inner.Name.Value] = true
+			case *parser.ConstStatement:
+				exportedNames[inner.Name.Value] = true
+			case *parser.AssignStatement:
+				exportedNames[inner.Name.Value] = true
+			}
+		}
+	}
+
+	// Build set of requested names
+	requestedNames := map[string]bool{}
+	for _, name := range s.Names {
+		requestedNames[name] = true
+	}
+
+	g.writef("// --- import from %s ---", s.Path)
+
+	// Process the imported file's statements
+	// Handle nested imports first
+	importDir := filepath.Dir(importPath)
+	oldSourceDir := g.sourceDir
+	g.sourceDir = importDir
+
+	for _, stmt := range program.Statements {
+		switch inner := stmt.(type) {
+		case *parser.ImportStatement:
+			g.genImport(inner)
+		case *parser.ExportStatement:
+			// Generate the inner statement (it will be visible in scope)
+			g.genStatement(inner.Statement)
+		case *parser.FunctionDefinition:
+			// Only generate if it's a helper used by exported functions
+			// or if it's directly requested
+			if requestedNames[inner.Name.Value] || exportedNames[inner.Name.Value] {
+				g.genStatement(stmt)
+			}
+		default:
+			// Generate all top-level statements (they may have side effects)
+			g.genStatement(stmt)
+		}
+	}
+
+	g.sourceDir = oldSourceDir
+	g.writef("// --- end import from %s ---", s.Path)
 }
 
 func (g *Generator) genFuncDef(s *parser.FunctionDefinition) {
@@ -708,6 +812,16 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 		return fmt.Sprintf("cMap(\"_type\", \"redirect\", \"url\", %s, \"status\", float64(302))", args[0])
 	case "response":
 		return fmt.Sprintf("cWebResponse(%s)", strings.Join(args, ", "))
+	case "static":
+		return fmt.Sprintf("cWebStatic(%s)", strings.Join(args, ", "))
+	case "set_cookie":
+		return fmt.Sprintf("cWebSetCookie(%s)", strings.Join(args, ", "))
+	case "delete_cookie":
+		return fmt.Sprintf("cWebDeleteCookie(%s)", strings.Join(args, ", "))
+	case "use":
+		return fmt.Sprintf("func() Value { cWebMiddlewares = append(cWebMiddlewares, %s); return nil }()", args[0])
+	case "middleware":
+		return "cWebMiddlewareNS"
 	}
 	return "nil"
 }

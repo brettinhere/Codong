@@ -1011,6 +1011,14 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 				}
 				return srv
 			}}
+		case "ws":
+			return &BuiltinFunction{Name: "server.ws", Fn: func(interp *Interpreter, args ...Object) Object {
+				return i.webWsRegister(args)
+			}}
+		case "ws_broadcast":
+			return &BuiltinFunction{Name: "server.ws_broadcast", Fn: func(interp *Interpreter, args ...Object) Object {
+				return i.webWsBroadcast(args)
+			}}
 		}
 	}
 
