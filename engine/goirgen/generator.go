@@ -664,6 +664,14 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 			return g.genErrorCall(method, args, named)
 		case "llm":
 			return g.genLlmCall(method, args, named)
+		case "fs":
+			return g.genFsCall(method, args, named)
+		case "json":
+			return g.genJsonCall(method, args, named)
+		case "env":
+			return g.genEnvCall(method, args, named)
+		case "time":
+			return g.genTimeCall(method, args, named)
 		}
 	}
 
@@ -891,6 +899,148 @@ func (g *Generator) genErrorCall(method string, args []string, named map[string]
 		if len(args) >= 1 {
 			return fmt.Sprintf("cErrorFromCompact(%s)", args[0])
 		}
+	}
+	return "nil"
+}
+
+func (g *Generator) genFsCall(method string, args []string, named map[string]parser.Expression) string {
+	allArgs := strings.Join(args, ", ")
+	switch method {
+	case "read":
+		return fmt.Sprintf("cFsRead(%s)", allArgs)
+	case "write":
+		return fmt.Sprintf("cFsWrite(%s)", allArgs)
+	case "append":
+		return fmt.Sprintf("cFsAppend(%s)", allArgs)
+	case "exists":
+		return fmt.Sprintf("cFsExists(%s)", allArgs)
+	case "delete":
+		return fmt.Sprintf("cFsDelete(%s)", allArgs)
+	case "copy":
+		return fmt.Sprintf("cFsCopy(%s)", allArgs)
+	case "move":
+		return fmt.Sprintf("cFsMove(%s)", allArgs)
+	case "list":
+		return fmt.Sprintf("cFsList(%s)", allArgs)
+	case "mkdir":
+		return fmt.Sprintf("cFsMkdir(%s)", allArgs)
+	case "rmdir":
+		// Check for named recursive arg
+		if named != nil {
+			if r, ok := named["recursive"]; ok {
+				if len(args) > 0 {
+					return fmt.Sprintf("cFsRmdir(%s, %s)", args[0], g.genExpr(r))
+				}
+			}
+		}
+		return fmt.Sprintf("cFsRmdir(%s)", allArgs)
+	case "stat":
+		return fmt.Sprintf("cFsStat(%s)", allArgs)
+	case "read_json":
+		return fmt.Sprintf("cFsReadJson(%s)", allArgs)
+	case "write_json":
+		return fmt.Sprintf("cFsWriteJson(%s)", allArgs)
+	case "read_lines":
+		return fmt.Sprintf("cFsReadLines(%s)", allArgs)
+	case "write_lines":
+		return fmt.Sprintf("cFsWriteLines(%s)", allArgs)
+	case "join":
+		return fmt.Sprintf("cFsJoin(%s)", allArgs)
+	case "cwd":
+		return "cFsCwd()"
+	case "basename":
+		return fmt.Sprintf("cFsBasename(%s)", allArgs)
+	case "dirname":
+		return fmt.Sprintf("cFsDirname(%s)", allArgs)
+	case "extension":
+		return fmt.Sprintf("cFsExtension(%s)", allArgs)
+	case "safe_join":
+		return fmt.Sprintf("cFsSafeJoin(%s)", allArgs)
+	case "temp_file":
+		return "cFsTempFile()"
+	case "temp_dir":
+		return "cFsTempDir()"
+	}
+	return "nil"
+}
+
+func (g *Generator) genJsonCall(method string, args []string, named map[string]parser.Expression) string {
+	allArgs := strings.Join(args, ", ")
+	switch method {
+	case "parse":
+		return fmt.Sprintf("cJsonParse(%s)", allArgs)
+	case "stringify":
+		// Check for named indent arg
+		if named != nil {
+			if indent, ok := named["indent"]; ok {
+				if len(args) > 0 {
+					return fmt.Sprintf("cJsonStringify(%s, %s)", args[0], g.genExpr(indent))
+				}
+			}
+		}
+		return fmt.Sprintf("cJsonStringify(%s)", allArgs)
+	case "valid":
+		return fmt.Sprintf("cJsonValid(%s)", allArgs)
+	case "merge":
+		return fmt.Sprintf("cJsonMerge(%s)", allArgs)
+	case "get":
+		return fmt.Sprintf("cJsonGet(%s)", allArgs)
+	case "set":
+		return fmt.Sprintf("cJsonSet(%s)", allArgs)
+	case "flatten":
+		return fmt.Sprintf("cJsonFlatten(%s)", allArgs)
+	case "unflatten":
+		return fmt.Sprintf("cJsonUnflatten(%s)", allArgs)
+	}
+	return "nil"
+}
+
+func (g *Generator) genEnvCall(method string, args []string, named map[string]parser.Expression) string {
+	allArgs := strings.Join(args, ", ")
+	switch method {
+	case "get":
+		return fmt.Sprintf("cEnvGet(%s)", allArgs)
+	case "require":
+		return fmt.Sprintf("cEnvRequire(%s)", allArgs)
+	case "has":
+		return fmt.Sprintf("cEnvHas(%s)", allArgs)
+	case "all":
+		return "cEnvAll()"
+	case "load":
+		return fmt.Sprintf("cEnvLoad(%s)", allArgs)
+	}
+	return "nil"
+}
+
+func (g *Generator) genTimeCall(method string, args []string, named map[string]parser.Expression) string {
+	allArgs := strings.Join(args, ", ")
+	switch method {
+	case "sleep":
+		return fmt.Sprintf("cTimeSleep(%s)", allArgs)
+	case "now":
+		return "cTimeNow()"
+	case "now_iso":
+		return "cTimeNowIso()"
+	case "format":
+		return fmt.Sprintf("cTimeFormat(%s)", allArgs)
+	case "parse":
+		return fmt.Sprintf("cTimeParse(%s)", allArgs)
+	case "diff":
+		return fmt.Sprintf("cTimeDiff(%s)", allArgs)
+	case "since":
+		return fmt.Sprintf("cTimeSince(%s)", allArgs)
+	case "until":
+		return fmt.Sprintf("cTimeUntil(%s)", allArgs)
+	case "add":
+		return fmt.Sprintf("cTimeAdd(%s)", allArgs)
+	case "is_before":
+		return fmt.Sprintf("cTimeIsBefore(%s)", allArgs)
+	case "is_after":
+		return fmt.Sprintf("cTimeIsAfter(%s)", allArgs)
+	case "today_start":
+		return "cTimeTodayStart()"
+	case "today_end":
+		return "cTimeTodayEnd()"
 	}
 	return "nil"
 }

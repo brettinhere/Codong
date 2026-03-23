@@ -197,10 +197,16 @@ type Interpreter struct {
 	callDepth int             // current recursion depth
 	mu        sync.Mutex      // protects eval from concurrent HTTP handlers
 	servers   []*ServerObject // active web servers
+	workDir   string          // working directory for fs/env modules (dir of .cod file)
 }
 
 func New() *Interpreter {
 	return &Interpreter{}
+}
+
+// SetWorkDir sets the working directory for fs/env modules.
+func (i *Interpreter) SetWorkDir(dir string) {
+	i.workDir = dir
 }
 
 // Output returns all captured print() output.
@@ -720,6 +726,18 @@ func (i *Interpreter) evalIdentifier(node *parser.Identifier, env *Environment) 
 	if node.Value == "llm" {
 		return llmModuleSingleton
 	}
+	if node.Value == "fs" {
+		return fsModuleSingleton
+	}
+	if node.Value == "json" {
+		return jsonModuleSingleton
+	}
+	if node.Value == "env" {
+		return envModuleSingleton
+	}
+	if node.Value == "time" {
+		return timeModuleSingleton
+	}
 	// Check built-in functions
 	if builtin, ok := builtins[node.Value]; ok {
 		return builtin
@@ -943,6 +961,26 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 	// llm module methods: llm.ask(), llm.chat(), llm.embed(), etc.
 	if _, ok := obj.(*LlmModuleObject); ok {
 		return i.evalLlmModuleMethod(prop)
+	}
+
+	// fs module methods: fs.read(), fs.write(), fs.exists(), etc.
+	if _, ok := obj.(*FsModuleObject); ok {
+		return i.evalFsModuleMethod(prop)
+	}
+
+	// json module methods: json.parse(), json.stringify(), etc.
+	if _, ok := obj.(*JsonModuleObject); ok {
+		return i.evalJsonModuleMethod(prop)
+	}
+
+	// env module methods: env.get(), env.require(), etc.
+	if _, ok := obj.(*EnvModuleObject); ok {
+		return i.evalEnvModuleMethod(prop)
+	}
+
+	// time module methods: time.now(), time.sleep(), etc.
+	if _, ok := obj.(*TimeModuleObject); ok {
+		return i.evalTimeModuleMethod(prop)
 	}
 
 	// server object methods: server.get/post/put/delete/patch/close/group

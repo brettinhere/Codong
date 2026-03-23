@@ -109,6 +109,9 @@ func evalFile(path string) {
 	}
 
 	interp := interpreter.New()
+	// Set workDir to the directory containing the source file
+	absPath, _ := filepath.Abs(path)
+	interp.SetWorkDir(filepath.Dir(absPath))
 	env := interpreter.NewEnvironment()
 	result := interp.Eval(program, env)
 

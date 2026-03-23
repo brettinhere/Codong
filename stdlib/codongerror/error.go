@@ -39,8 +39,23 @@ const (
 	// E5xxx - File/IO errors
 	E5001_FILE_NOT_FOUND    = "E5001_FILE_NOT_FOUND"
 	E5002_PERMISSION_DENIED = "E5002_PERMISSION_DENIED"
-	E5003_DISK_FULL         = "E5003_DISK_FULL"
-	E5004_INVALID_PATH      = "E5004_INVALID_PATH"
+	E5003_FILE_EXISTS       = "E5003_FILE_EXISTS"
+	E5004_IS_DIRECTORY      = "E5004_IS_DIRECTORY"
+	E5005_NOT_DIRECTORY     = "E5005_NOT_DIRECTORY"
+	E5006_DIR_NOT_EMPTY     = "E5006_DIR_NOT_EMPTY"
+	E5007_INVALID_PATH      = "E5007_INVALID_PATH"
+	E5008_IO_ERROR          = "E5008_IO_ERROR"
+	E5009_FILE_TOO_LARGE    = "E5009_FILE_TOO_LARGE"
+
+	// E6xxx - JSON errors
+	E6001_PARSE_ERROR     = "E6001_PARSE_ERROR"
+	E6002_STRINGIFY_ERROR = "E6002_STRINGIFY_ERROR"
+	E6003_INVALID_PATH    = "E6003_INVALID_PATH"
+
+	// E7xxx - Environment errors
+	E7001_ENV_NOT_SET        = "E7001_ENV_NOT_SET"
+	E7002_ENV_FILE_NOT_FOUND = "E7002_ENV_FILE_NOT_FOUND"
+	E7003_ENV_PARSE_ERROR    = "E7003_ENV_PARSE_ERROR"
 
 	// E9xxx - System/Runtime errors
 	E9001_OUT_OF_MEMORY  = "E9001_OUT_OF_MEMORY"
@@ -228,9 +243,9 @@ func sourceFromCode(code string) string {
 	case '5':
 		return "fs"
 	case '6':
-		return "cloud"
+		return "json"
 	case '7':
-		return "agent"
+		return "env"
 	case '9':
 		return "runtime"
 	default:

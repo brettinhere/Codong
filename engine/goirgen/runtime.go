@@ -6,22 +6,25 @@ const RuntimeSource = `
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
-	"bytes"
-	"context"
 
 	_ "modernc.org/sqlite"
 )
@@ -1844,6 +1847,677 @@ func cCallFn(fn Value, args ...Value) Value {
 	return nil
 }
 
+// ============================================================
+// fs module runtime functions
+// ============================================================
+
+var cFsWorkDir string
+
+func init() {
+	cFsWorkDir, _ = os.Getwd()
+}
+
+func cFsResolve(path string) string {
+	p := toString(path)
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Clean(filepath.Join(cFsWorkDir, p))
+}
+
+func cFsRead(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	p := cFsResolve(toString(args[0]))
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", fmt.Sprintf("check path: %s", p))
+		}
+		if os.IsPermission(err) {
+			return cError("E5002_PERMISSION_DENIED", fmt.Sprintf("permission denied: %s", toString(args[0])), "fix", "check file permissions")
+		}
+		return cError("E5008_IO_ERROR", err.Error(), "fix", "check disk space")
+	}
+	return string(data)
+}
+
+func cFsWrite(args ...Value) Value {
+	if len(args) < 2 { return cError("E5008_IO_ERROR", "fs.write requires path and content", "fix", "fs.write(path, content)") }
+	p := cFsResolve(toString(args[0]))
+	os.MkdirAll(filepath.Dir(p), 0755)
+	if err := os.WriteFile(p, []byte(toString(args[1])), 0644); err != nil {
+		if os.IsPermission(err) {
+			return cError("E5002_PERMISSION_DENIED", err.Error(), "fix", "check file permissions")
+		}
+		return cError("E5008_IO_ERROR", err.Error(), "fix", "check disk space")
+	}
+	return true
+}
+
+func cFsAppend(args ...Value) Value {
+	if len(args) < 2 { return cError("E5008_IO_ERROR", "fs.append requires path and content", "fix", "fs.append(path, content)") }
+	p := cFsResolve(toString(args[0]))
+	os.MkdirAll(filepath.Dir(p), 0755)
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return cError("E5008_IO_ERROR", err.Error(), "fix", "check permissions")
+	}
+	defer f.Close()
+	f.WriteString(toString(args[1]))
+	return true
+}
+
+func cFsExists(args ...Value) Value {
+	if len(args) < 1 { return false }
+	p := cFsResolve(toString(args[0]))
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func cFsDelete(args ...Value) Value {
+	if len(args) < 1 { return cError("E5008_IO_ERROR", "fs.delete requires a path", "fix", "fs.delete(path)") }
+	p := cFsResolve(toString(args[0]))
+	if err := os.Remove(p); err != nil {
+		if os.IsNotExist(err) {
+			return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", "check path")
+		}
+		return cError("E5008_IO_ERROR", err.Error(), "fix", "check permissions")
+	}
+	return true
+}
+
+func cFsCopy(args ...Value) Value {
+	if len(args) < 2 { return cError("E5008_IO_ERROR", "fs.copy requires src and dst", "fix", "fs.copy(src, dst)") }
+	src := cFsResolve(toString(args[0]))
+	dst := cFsResolve(toString(args[1]))
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("source not found: %s", toString(args[0])), "fix", "check source path")
+	}
+	defer srcFile.Close()
+	os.MkdirAll(filepath.Dir(dst), 0755)
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return cError("E5008_IO_ERROR", err.Error(), "fix", "check permissions")
+	}
+	defer dstFile.Close()
+	io.Copy(dstFile, srcFile)
+	return true
+}
+
+func cFsMove(args ...Value) Value {
+	if len(args) < 2 { return cError("E5008_IO_ERROR", "fs.move requires src and dst", "fix", "fs.move(src, dst)") }
+	src := cFsResolve(toString(args[0]))
+	dst := cFsResolve(toString(args[1]))
+	os.MkdirAll(filepath.Dir(dst), 0755)
+	if err := os.Rename(src, dst); err != nil {
+		return cError("E5008_IO_ERROR", err.Error(), "fix", "check paths")
+	}
+	return true
+}
+
+func cFsList(args ...Value) Value {
+	if len(args) < 1 { return cError("E5008_IO_ERROR", "fs.list requires a directory path", "fix", "fs.list(dir)") }
+	p := cFsResolve(toString(args[0]))
+	entries, err := os.ReadDir(p)
+	if err != nil {
+		return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("directory not found: %s", toString(args[0])), "fix", "check directory path")
+	}
+	result := make([]Value, 0, len(entries))
+	for _, entry := range entries {
+		info, _ := entry.Info()
+		entryType := "file"
+		if entry.IsDir() { entryType = "dir" }
+		var size int64
+		var modified string
+		if info != nil {
+			size = info.Size()
+			modified = info.ModTime().UTC().Format(time.RFC3339)
+		}
+		result = append(result, cMap("name", entry.Name(), "path", filepath.ToSlash(filepath.Join(p, entry.Name())), "type", entryType, "size", float64(size), "modified", modified))
+	}
+	return &CodongList{Elements: result}
+}
+
+func cFsMkdir(args ...Value) Value {
+	if len(args) < 1 { return cError("E5008_IO_ERROR", "fs.mkdir requires a path", "fix", "fs.mkdir(path)") }
+	p := cFsResolve(toString(args[0]))
+	if err := os.MkdirAll(p, 0755); err != nil {
+		return cError("E5008_IO_ERROR", err.Error(), "fix", "check permissions")
+	}
+	return true
+}
+
+func cFsRmdir(args ...Value) Value {
+	if len(args) < 1 { return cError("E5008_IO_ERROR", "fs.rmdir requires a path", "fix", "fs.rmdir(path)") }
+	p := cFsResolve(toString(args[0]))
+	recursive := false
+	if len(args) >= 2 { recursive = toBool(args[1]) }
+	if recursive {
+		os.RemoveAll(p)
+	} else {
+		if err := os.Remove(p); err != nil {
+			return cError("E5006_DIR_NOT_EMPTY", fmt.Sprintf("directory not empty: %s", toString(args[0])), "fix", "use fs.rmdir(path, true) to delete recursively")
+		}
+	}
+	return true
+}
+
+func cFsStat(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	p := cFsResolve(toString(args[0]))
+	info, err := os.Stat(p)
+	if err != nil { return nil }
+	entryType := "file"
+	if info.IsDir() { entryType = "dir" }
+	return cMap("name", info.Name(), "path", filepath.ToSlash(p), "type", entryType, "size", float64(info.Size()),
+		"modified", info.ModTime().UTC().Format(time.RFC3339), "created", info.ModTime().UTC().Format(time.RFC3339),
+		"extension", filepath.Ext(info.Name()))
+}
+
+func cFsReadJson(args ...Value) Value {
+	if len(args) < 1 { return cError("E5001_FILE_NOT_FOUND", "fs.read_json requires a path", "fix", "fs.read_json(path)") }
+	p := cFsResolve(toString(args[0]))
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", "check path")
+	}
+	var result interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return cError("E6001_PARSE_ERROR", fmt.Sprintf("JSON parse error: %s", err.Error()), "fix", "check JSON syntax")
+	}
+	return goToCodong(result)
+}
+
+func cFsWriteJson(args ...Value) Value {
+	if len(args) < 2 { return cError("E5008_IO_ERROR", "fs.write_json requires path and data", "fix", "fs.write_json(path, data)") }
+	p := cFsResolve(toString(args[0]))
+	goVal := codongToGo(args[1])
+	jsonData, err := json.MarshalIndent(goVal, "", "  ")
+	if err != nil {
+		return cError("E6002_STRINGIFY_ERROR", fmt.Sprintf("JSON stringify error: %s", err.Error()), "fix", "remove circular references")
+	}
+	os.MkdirAll(filepath.Dir(p), 0755)
+	os.WriteFile(p, append(jsonData, '\n'), 0644)
+	return true
+}
+
+func cFsReadLines(args ...Value) Value {
+	if len(args) < 1 { return cError("E5001_FILE_NOT_FOUND", "fs.read_lines requires a path", "fix", "fs.read_lines(path)") }
+	p := cFsResolve(toString(args[0]))
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", "check path")
+	}
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	lines := strings.Split(content, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	result := make([]Value, len(lines))
+	for i, line := range lines { result[i] = line }
+	return &CodongList{Elements: result}
+}
+
+func cFsWriteLines(args ...Value) Value {
+	if len(args) < 2 { return cError("E5008_IO_ERROR", "fs.write_lines requires path and lines", "fix", "fs.write_lines(path, lines)") }
+	p := cFsResolve(toString(args[0]))
+	list := toList(args[1])
+	var sb strings.Builder
+	for _, el := range list.Elements {
+		sb.WriteString(toString(el))
+		sb.WriteString("\n")
+	}
+	os.MkdirAll(filepath.Dir(p), 0755)
+	os.WriteFile(p, []byte(sb.String()), 0644)
+	return true
+}
+
+func cFsJoin(args ...Value) Value {
+	parts := make([]string, len(args))
+	for i, a := range args { parts[i] = toString(a) }
+	return filepath.ToSlash(filepath.Join(parts...))
+}
+
+func cFsCwd(args ...Value) Value {
+	return filepath.ToSlash(cFsWorkDir)
+}
+
+func cFsBasename(args ...Value) Value {
+	if len(args) < 1 { return "" }
+	return filepath.Base(toString(args[0]))
+}
+
+func cFsDirname(args ...Value) Value {
+	if len(args) < 1 { return "" }
+	return filepath.ToSlash(filepath.Dir(toString(args[0])))
+}
+
+func cFsExtension(args ...Value) Value {
+	if len(args) < 1 { return "" }
+	return filepath.Ext(toString(args[0]))
+}
+
+func cFsSafeJoin(args ...Value) Value {
+	if len(args) < 2 { return nil }
+	base := cFsResolve(toString(args[0]))
+	userInput := toString(args[1])
+	decoded, err := url.PathUnescape(userInput)
+	if err != nil { return nil }
+	joined := filepath.Clean(filepath.Join(base, decoded))
+	if !strings.HasPrefix(joined+string(filepath.Separator), base+string(filepath.Separator)) {
+		return nil
+	}
+	if strings.ContainsRune(joined, 0) { return nil }
+	return filepath.ToSlash(joined)
+}
+
+func cFsTempFile(args ...Value) Value {
+	f, err := os.CreateTemp("", "codong-*.tmp")
+	if err != nil {
+		return cError("E5008_IO_ERROR", err.Error(), "fix", "check temp directory permissions")
+	}
+	tmpPath := filepath.ToSlash(f.Name())
+	f.Close()
+	deleteFn := func(args ...Value) Value { os.Remove(tmpPath); return nil }
+	return cMap("path", tmpPath, "delete", CodongFn(deleteFn))
+}
+
+func cFsTempDir(args ...Value) Value {
+	dir, err := os.MkdirTemp("", "codong-*")
+	if err != nil {
+		return cError("E5008_IO_ERROR", err.Error(), "fix", "check temp directory permissions")
+	}
+	tmpPath := filepath.ToSlash(dir)
+	deleteFn := func(args ...Value) Value { os.RemoveAll(tmpPath); return nil }
+	return cMap("path", tmpPath, "delete", CodongFn(deleteFn))
+}
+
+// goToCodong converts a Go value (from JSON unmarshal) to Codong runtime types.
+func goToCodong(v interface{}) Value {
+	if v == nil { return nil }
+	switch val := v.(type) {
+	case map[string]interface{}:
+		m := &CodongMap{Entries: map[string]Value{}, Order: []string{}}
+		for k, vv := range val {
+			m.Entries[k] = goToCodong(vv)
+			m.Order = append(m.Order, k)
+		}
+		return m
+	case []interface{}:
+		elems := make([]Value, len(val))
+		for i, vv := range val { elems[i] = goToCodong(vv) }
+		return &CodongList{Elements: elems}
+	case float64:
+		return val
+	case string:
+		return val
+	case bool:
+		return val
+	default:
+		return fmt.Sprintf("%v", val)
+	}
+}
+
+// codongToGo converts a Codong runtime value to a plain Go value for JSON serialization.
+func codongToGo(v Value) interface{} {
+	if v == nil { return nil }
+	switch val := v.(type) {
+	case *CodongMap:
+		result := make(map[string]interface{})
+		for k, vv := range val.Entries { result[k] = codongToGo(vv) }
+		return result
+	case *CodongList:
+		result := make([]interface{}, len(val.Elements))
+		for i, vv := range val.Elements { result[i] = codongToGo(vv) }
+		return result
+	case *CodongError:
+		return map[string]interface{}{"code": val.Code, "message": val.Message}
+	default:
+		return v
+	}
+}
+
+// ============================================================
+// json module runtime functions
+// ============================================================
+
+func cJsonParse(args ...Value) Value {
+	if len(args) < 1 { return cError("E6001_PARSE_ERROR", "json.parse requires a string", "fix", "json.parse(string)") }
+	s := toString(args[0])
+	var result interface{}
+	if err := json.Unmarshal([]byte(s), &result); err != nil {
+		return cError("E6001_PARSE_ERROR", fmt.Sprintf("JSON parse error: %s", err.Error()), "fix", "check JSON syntax")
+	}
+	return goToCodong(result)
+}
+
+func cJsonStringify(args ...Value) Value {
+	if len(args) < 1 { return "null" }
+	goVal := codongToGo(args[0])
+	indent := 0
+	if len(args) >= 2 { indent = int(toFloat(args[1])) }
+	var data []byte
+	var err error
+	if indent > 0 {
+		data, err = json.MarshalIndent(goVal, "", strings.Repeat(" ", indent))
+	} else {
+		data, err = json.Marshal(goVal)
+	}
+	if err != nil {
+		return cError("E6002_STRINGIFY_ERROR", fmt.Sprintf("JSON stringify error: %s", err.Error()), "fix", "remove circular references")
+	}
+	return string(data)
+}
+
+func cJsonValid(args ...Value) Value {
+	if len(args) < 1 { return false }
+	return json.Valid([]byte(toString(args[0])))
+}
+
+func cJsonMerge(args ...Value) Value {
+	if len(args) < 2 {
+		if len(args) == 1 { return args[0] }
+		return cMap()
+	}
+	aGo := codongToGo(args[0])
+	bGo := codongToGo(args[1])
+	aMap, aOk := aGo.(map[string]interface{})
+	bMap, bOk := bGo.(map[string]interface{})
+	if !aOk || !bOk { return args[1] }
+	return goToCodong(cJsonDeepMerge(aMap, bMap))
+}
+
+func cJsonDeepMerge(a, b map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+	for k, v := range a { result[k] = v }
+	for k, v := range b {
+		if aVal, exists := result[k]; exists {
+			aMap, aOk := aVal.(map[string]interface{})
+			bMap, bOk := v.(map[string]interface{})
+			if aOk && bOk {
+				result[k] = cJsonDeepMerge(aMap, bMap)
+				continue
+			}
+		}
+		result[k] = v
+	}
+	return result
+}
+
+func cJsonGet(args ...Value) Value {
+	if len(args) < 2 { return nil }
+	data := codongToGo(args[0])
+	path := toString(args[1])
+	var defaultVal interface{}
+	if len(args) >= 3 { defaultVal = args[2] }
+	parts := strings.Split(path, ".")
+	cur := data
+	for _, part := range parts {
+		m, ok := cur.(map[string]interface{})
+		if !ok { return defaultVal }
+		cur, ok = m[part]
+		if !ok { return defaultVal }
+	}
+	if cur == nil { return defaultVal }
+	return goToCodong(cur)
+}
+
+func cJsonSet(args ...Value) Value {
+	if len(args) < 3 { return nil }
+	data := codongToGo(args[0])
+	path := toString(args[1])
+	value := codongToGo(args[2])
+	parts := strings.Split(path, ".")
+	result := cJsonSetRecursive(data, parts, value)
+	return goToCodong(result)
+}
+
+func cJsonSetRecursive(data interface{}, parts []string, value interface{}) interface{} {
+	if len(parts) == 0 { return value }
+	m, ok := data.(map[string]interface{})
+	if !ok { m = make(map[string]interface{}) }
+	result := make(map[string]interface{})
+	for k, v := range m { result[k] = v }
+	if len(parts) == 1 {
+		result[parts[0]] = value
+	} else {
+		existing, _ := result[parts[0]]
+		result[parts[0]] = cJsonSetRecursive(existing, parts[1:], value)
+	}
+	return result
+}
+
+func cJsonFlatten(args ...Value) Value {
+	if len(args) < 1 { return cMap() }
+	data := codongToGo(args[0])
+	m, ok := data.(map[string]interface{})
+	if !ok { return args[0] }
+	flat := make(map[string]interface{})
+	cJsonFlattenHelper("", m, flat)
+	return goToCodong(flat)
+}
+
+func cJsonFlattenHelper(prefix string, m map[string]interface{}, out map[string]interface{}) {
+	for k, v := range m {
+		key := k
+		if prefix != "" { key = prefix + "." + k }
+		if nested, ok := v.(map[string]interface{}); ok {
+			cJsonFlattenHelper(key, nested, out)
+		} else {
+			out[key] = v
+		}
+	}
+}
+
+func cJsonUnflatten(args ...Value) Value {
+	if len(args) < 1 { return cMap() }
+	data := codongToGo(args[0])
+	m, ok := data.(map[string]interface{})
+	if !ok { return args[0] }
+	result := make(map[string]interface{})
+	for k, v := range m {
+		parts := strings.Split(k, ".")
+		cur := result
+		for i, part := range parts {
+			if i == len(parts)-1 {
+				cur[part] = v
+			} else {
+				next, ok := cur[part]
+				if !ok {
+					next = make(map[string]interface{})
+					cur[part] = next
+				}
+				cur = next.(map[string]interface{})
+			}
+		}
+	}
+	return goToCodong(result)
+}
+
+// ============================================================
+// env module runtime functions
+// ============================================================
+
+func cEnvGet(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	name := toString(args[0])
+	val, ok := os.LookupEnv(name)
+	if !ok {
+		if len(args) >= 2 { return args[1] }
+		return nil
+	}
+	return val
+}
+
+func cEnvRequire(args ...Value) Value {
+	if len(args) < 1 { return cError("E7001_ENV_NOT_SET", "env.require needs a variable name", "fix", "env.require(\"VAR\")") }
+	name := toString(args[0])
+	val, ok := os.LookupEnv(name)
+	if !ok {
+		return cError("E7001_ENV_NOT_SET", fmt.Sprintf("required environment variable not set: %s", name), "fix", fmt.Sprintf("set environment variable: %s", name))
+	}
+	return val
+}
+
+func cEnvHas(args ...Value) Value {
+	if len(args) < 1 { return false }
+	_, ok := os.LookupEnv(toString(args[0]))
+	return ok
+}
+
+func cEnvAll(args ...Value) Value {
+	m := &CodongMap{Entries: map[string]Value{}, Order: []string{}}
+	for _, e := range os.Environ() {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			m.Entries[parts[0]] = parts[1]
+			m.Order = append(m.Order, parts[0])
+		}
+	}
+	return m
+}
+
+func cEnvLoad(args ...Value) Value {
+	if len(args) < 1 { return cError("E7002_ENV_FILE_NOT_FOUND", "env.load requires a file path", "fix", "env.load(\".env\")") }
+	p := cFsResolve(toString(args[0]))
+	f, err := os.Open(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cError("E7002_ENV_FILE_NOT_FOUND", fmt.Sprintf(".env file not found: %s", toString(args[0])), "fix", "create .env file or use env.get() with default")
+		}
+		return cError("E7003_ENV_PARSE_ERROR", err.Error(), "fix", "check file permissions")
+	}
+	defer f.Close()
+	count := float64(0)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") { continue }
+		eqIdx := strings.Index(line, "=")
+		if eqIdx < 0 { continue }
+		key := strings.TrimSpace(line[:eqIdx])
+		val := strings.TrimSpace(line[eqIdx+1:])
+		if (strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) || (strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'")) {
+			val = val[1 : len(val)-1]
+		}
+		if strings.Contains(val, "\\n") { val = strings.ReplaceAll(val, "\\n", "\n") }
+		if _, ok := os.LookupEnv(key); !ok {
+			os.Setenv(key, val)
+			count++
+		}
+	}
+	return count
+}
+
+// ============================================================
+// time module runtime functions
+// ============================================================
+
+func cTimeSleep(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	d, err := time.ParseDuration(toString(args[0]))
+	if err != nil {
+		return cError("E1005_INVALID_ARGUMENT", "invalid duration: "+toString(args[0]), "fix", "use '500ms', '2s', '1m', '1h'")
+	}
+	time.Sleep(d)
+	return nil
+}
+
+func cTimeNow(args ...Value) Value {
+	return float64(time.Now().UnixMilli())
+}
+
+func cTimeNowIso(args ...Value) Value {
+	return time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+func cTimeFormat(args ...Value) Value {
+	if len(args) < 2 { return "" }
+	tsMs := toFloat(args[0])
+	fmtStr := toString(args[1])
+	t := time.UnixMilli(int64(tsMs)).UTC()
+	switch fmtStr {
+	case "date": fmtStr = "2006-01-02"
+	case "datetime": fmtStr = "2006-01-02 15:04:05"
+	case "iso": fmtStr = time.RFC3339
+	case "rfc2822": fmtStr = "Mon, 02 Jan 2006 15:04:05 -0700"
+	}
+	return t.Format(fmtStr)
+}
+
+func cTimeParse(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	s := toString(args[0])
+	formats := []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"}
+	if len(args) >= 2 { formats = []string{toString(args[1])} }
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return float64(t.UnixMilli())
+		}
+	}
+	return nil
+}
+
+func cTimeDiff(args ...Value) Value {
+	if len(args) < 2 { return nil }
+	t1 := int64(toFloat(args[0]))
+	t2 := int64(toFloat(args[1]))
+	ms := t2 - t1
+	if ms < 0 { ms = -ms }
+	return cMap("ms", float64(ms), "s", float64(ms/1000), "m", float64(ms/60000), "h", float64(ms/3600000), "days", float64(ms/86400000))
+}
+
+func cTimeSince(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	t1 := toFloat(args[0])
+	now := float64(time.Now().UnixMilli())
+	ms := now - t1
+	if ms < 0 { ms = 0 }
+	return cMap("ms", ms, "s", ms/1000, "m", ms/60000, "h", ms/3600000, "days", ms/86400000)
+}
+
+func cTimeUntil(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	t1 := toFloat(args[0])
+	now := float64(time.Now().UnixMilli())
+	ms := t1 - now
+	if ms < 0 { ms = 0 }
+	return cMap("ms", ms, "s", ms/1000, "m", ms/60000, "h", ms/3600000, "days", ms/86400000)
+}
+
+func cTimeAdd(args ...Value) Value {
+	if len(args) < 2 { return nil }
+	tsMs := toFloat(args[0])
+	offset := toString(args[1])
+	d, err := time.ParseDuration(offset)
+	if err != nil { return nil }
+	t := time.UnixMilli(int64(tsMs))
+	return float64(t.Add(d).UnixMilli())
+}
+
+func cTimeIsBefore(args ...Value) Value {
+	if len(args) < 2 { return false }
+	return toFloat(args[0]) < toFloat(args[1])
+}
+
+func cTimeIsAfter(args ...Value) Value {
+	if len(args) < 2 { return false }
+	return toFloat(args[0]) > toFloat(args[1])
+}
+
+func cTimeTodayStart(args ...Value) Value {
+	now := time.Now().UTC()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	return float64(start.UnixMilli())
+}
+
+func cTimeTodayEnd(args ...Value) Value {
+	now := time.Now().UTC()
+	end := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999000000, time.UTC)
+	return float64(end.UnixMilli())
+}
+
 // Ensure all imports are used
 var _ = bytes.NewReader
 var _ = context.Background
@@ -1857,4 +2531,7 @@ var _ = sql.Open
 var _ = strconv.Atoi
 var _ = syscall.SIGINT
 var _ = time.Second
+var _ = url.PathUnescape
+var _ = filepath.Join
+var _ = bufio.NewScanner
 `
