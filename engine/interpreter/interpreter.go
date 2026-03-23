@@ -111,9 +111,10 @@ var (
 // --- Environment ---
 
 type Environment struct {
-	store  map[string]Object
-	consts map[string]bool
-	outer  *Environment
+	store      map[string]Object
+	consts     map[string]bool
+	outer      *Environment
+	isFunction bool // true for environments created for function calls
 }
 
 func NewEnvironment() *Environment {
@@ -135,10 +136,36 @@ func (e *Environment) Get(name string) (Object, bool) {
 }
 
 func (e *Environment) Set(name string, val Object) Object {
-	// If variable exists in an outer scope, update it there
-	if _, ok := e.store[name]; !ok && e.outer != nil {
+	// If variable exists in current scope, update it here
+	if _, ok := e.store[name]; ok {
+		e.store[name] = val
+		return val
+	}
+	// If we are at a function boundary, don't propagate new assignments
+	// to the outer scope — create a new local binding instead.
+	// This ensures that plain assignment inside a function doesn't
+	// modify the enclosing scope. Compound assignments (+=, etc.)
+	// use SetOuter which still propagates through function boundaries.
+	if e.outer != nil && !e.isFunction {
 		if _, exists := e.outer.Get(name); exists {
 			return e.outer.Set(name, val)
+		}
+	}
+	e.store[name] = val
+	return val
+}
+
+// SetOuter updates a variable in the nearest scope where it exists,
+// crossing function boundaries. Used for compound assignments (+=, -=, etc.)
+// which need to update closure variables.
+func (e *Environment) SetOuter(name string, val Object) Object {
+	if _, ok := e.store[name]; ok {
+		e.store[name] = val
+		return val
+	}
+	if e.outer != nil {
+		if _, exists := e.outer.Get(name); exists {
+			return e.outer.SetOuter(name, val)
 		}
 	}
 	e.store[name] = val
@@ -396,7 +423,7 @@ func (i *Interpreter) evalCompoundAssign(node *parser.CompoundAssignStatement, e
 				fmt.Sprintf("variable '%s' is not defined", target.Value), "")
 		}
 		name := target.Value
-		writeback = func(v Object) { env.Set(name, v) }
+		writeback = func(v Object) { env.SetOuter(name, v) }
 
 	case *parser.MemberAccessExpression:
 		obj := i.Eval(target.Object, env)
@@ -775,6 +802,7 @@ func (i *Interpreter) applyFunction(fn Object, args []Object, named ...map[strin
 	switch fn := fn.(type) {
 	case *FunctionObject:
 		extEnv := NewEnclosedEnvironment(fn.Env)
+		extEnv.isFunction = true
 		// Apply positional arguments
 		for idx, param := range fn.Params {
 			if idx < len(args) {
