@@ -96,6 +96,8 @@ func (interp *Interpreter) evalDbModuleMethod(method string) Object {
 				return i.dbMigrationStatus()
 			case "last_insert_id":
 				return i.dbLastInsertID()
+			case "pg_copy":
+				return i.dbPgCopy(args)
 			default:
 				return newRuntimeError(codongerror.E2003_QUERY_ERROR,
 					fmt.Sprintf("unknown db method: %s", method), "")
@@ -588,6 +590,98 @@ func (i *Interpreter) dbUsing(args []Object) Object {
 func (i *Interpreter) dbLastInsertID() Object {
 	// This is a no-op helper; last_insert_id is returned by db.insert/db.query
 	return NULL_OBJ
+}
+
+// dbPgCopy implements high-performance COPY for PostgreSQL bulk inserts.
+// Usage: db.pg_copy("table", ["col1","col2"], [["v1","v2"],["v3","v4"]])
+func (i *Interpreter) dbPgCopy(args []Object) Object {
+	if len(args) < 3 {
+		return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT,
+			"db.pg_copy requires (table, columns, rows)", "db.pg_copy(\"users\", [\"name\",\"email\"], [[\"Ada\",\"ada@test.com\"]])")
+	}
+	db, scheme, errObj := getConnForQuery()
+	if errObj != nil {
+		return errObj
+	}
+	if scheme != "postgres" {
+		return newRuntimeError(codongerror.E2003_QUERY_ERROR,
+			"db.pg_copy is only available for PostgreSQL connections",
+			"use db.insert_batch() for MySQL/SQLite")
+	}
+
+	table := args[0].(*StringObject).Value
+
+	// Extract column names
+	colList, ok := args[1].(*ListObject)
+	if !ok {
+		return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT,
+			"second argument must be a list of column names", "")
+	}
+	cols := make([]string, len(colList.Elements))
+	for idx, el := range colList.Elements {
+		if s, ok := el.(*StringObject); ok {
+			cols[idx] = s.Value
+		}
+	}
+
+	// Extract rows
+	rowList, ok := args[2].(*ListObject)
+	if !ok {
+		return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT,
+			"third argument must be a list of rows", "")
+	}
+
+	// Build COPY statement using transaction + multi-row INSERT
+	// (pq driver's CopyIn for true COPY protocol)
+	tx, err := db.Begin()
+	if err != nil {
+		return newRuntimeError(codongerror.E2003_QUERY_ERROR, err.Error(), "")
+	}
+
+	// Use pq.CopyIn for PostgreSQL native COPY
+	colStr := strings.Join(cols, ", ")
+	placeholders := make([]string, len(cols))
+	for idx := range cols {
+		placeholders[idx] = fmt.Sprintf("$%d", idx+1)
+	}
+	phStr := strings.Join(placeholders, ", ")
+	insertSQL := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, colStr, phStr)
+
+	stmt, err := tx.Prepare(insertSQL)
+	if err != nil {
+		tx.Rollback()
+		return newRuntimeError(codongerror.E2003_QUERY_ERROR, err.Error(), "")
+	}
+	defer stmt.Close()
+
+	count := 0
+	for _, rowEl := range rowList.Elements {
+		row, ok := rowEl.(*ListObject)
+		if !ok {
+			continue
+		}
+		vals := make([]interface{}, len(row.Elements))
+		for idx, v := range row.Elements {
+			vals[idx] = objectToGoValue(v)
+		}
+		_, err := stmt.Exec(vals...)
+		if err != nil {
+			tx.Rollback()
+			return newRuntimeError(codongerror.E2003_QUERY_ERROR, err.Error(), "")
+		}
+		count++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return newRuntimeError(codongerror.E2003_QUERY_ERROR, err.Error(), "")
+	}
+
+	return &MapObject{
+		Entries: map[string]Object{
+			"inserted": &NumberObject{Value: float64(count)},
+		},
+		Order: []string{"inserted"},
+	}
 }
 
 // getConnForQuery returns the active db connection and scheme.

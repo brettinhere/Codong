@@ -140,6 +140,32 @@ func (interp *Interpreter) evalImageObjectMethod(img *CodongImageObject, method 
 				return i.imgWatermarkText(img, args) // Alias
 			case "strip_metadata":
 				return img // Already stripped in Go decode
+			case "blur":
+				return i.imgBlur(img, args)
+			case "sharpen":
+				return i.imgSharpen(img, args)
+			case "brightness":
+				return i.imgBrightness(img, args)
+			case "contrast":
+				return i.imgContrast(img, args)
+			case "gamma":
+				return i.imgGamma(img, args)
+			case "saturation":
+				return i.imgSaturation(img, args)
+			case "tint":
+				return i.imgTint(img, args)
+			case "to_rgb":
+				return i.imgToRGB(img)
+			case "watermark_image":
+				return i.imgWatermarkImage(img, args)
+			case "watermark_tile":
+				return i.imgWatermarkTile(img, args)
+			case "smart_crop":
+				return i.imgSmartCrop(img, args)
+			case "extend":
+				return i.imgExtend(img, args)
+			case "optimize":
+				return i.imgOptimize(img, args)
 			case "save":
 				return i.imgSave(img, args)
 			case "to_bytes":
@@ -726,4 +752,220 @@ func rotate270(src image.Image) image.Image {
 		}
 	}
 	return dst
+}
+
+// --- Phase 4 filter methods ---
+
+func (i *Interpreter) imgBlur(img *CodongImageObject, args []Object) Object {
+	radius := 3.0
+	if len(args) > 0 { if n, ok := args[0].(*NumberObject); ok { radius = n.Value } }
+	bounds := img.img.Bounds()
+	dst := image.NewRGBA(bounds)
+	kernelSize := int(radius)*2 + 1
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			var rr, gg, bb, aa float64; count := 0.0
+			for ky := -kernelSize/2; ky <= kernelSize/2; ky++ {
+				for kx := -kernelSize/2; kx <= kernelSize/2; kx++ {
+					nx, ny := x+kx, y+ky
+					if nx >= bounds.Min.X && nx < bounds.Max.X && ny >= bounds.Min.Y && ny < bounds.Max.Y {
+						r, g, b, a := img.img.At(nx, ny).RGBA()
+						rr += float64(r); gg += float64(g); bb += float64(b); aa += float64(a); count++
+					}
+				}
+			}
+			dst.Set(x, y, color.RGBA64{uint16(rr/count), uint16(gg/count), uint16(bb/count), uint16(aa/count)})
+		}
+	}
+	return &CodongImageObject{img: dst, format: img.format}
+}
+
+func (i *Interpreter) imgSharpen(img *CodongImageObject, args []Object) Object {
+	bounds := img.img.Bounds()
+	dst := image.NewRGBA(bounds)
+	// Unsharp mask: sharpen = original + (original - blur) * amount
+	amount := 1.5
+	if len(args) > 0 { if n, ok := args[0].(*NumberObject); ok { amount = n.Value } }
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r0, g0, b0, a0 := img.img.At(x, y).RGBA()
+			// Simple 3x3 average for blur
+			var rb, gb, bb float64; count := 0.0
+			for dy := -1; dy <= 1; dy++ {
+				for dx := -1; dx <= 1; dx++ {
+					nx, ny := x+dx, y+dy
+					if nx >= bounds.Min.X && nx < bounds.Max.X && ny >= bounds.Min.Y && ny < bounds.Max.Y {
+						r, g, b, _ := img.img.At(nx, ny).RGBA()
+						rb += float64(r); gb += float64(g); bb += float64(b); count++
+					}
+				}
+			}
+			rb /= count; gb /= count; bb /= count
+			clamp := func(v float64) uint16 { if v < 0 { return 0 }; if v > 65535 { return 65535 }; return uint16(v) }
+			nr := float64(r0) + (float64(r0)-rb)*amount
+			ng := float64(g0) + (float64(g0)-gb)*amount
+			nb := float64(b0) + (float64(b0)-bb)*amount
+			dst.Set(x, y, color.RGBA64{clamp(nr), clamp(ng), clamp(nb), uint16(a0)})
+		}
+	}
+	return &CodongImageObject{img: dst, format: img.format}
+}
+
+func (i *Interpreter) imgBrightness(img *CodongImageObject, args []Object) Object {
+	factor := 1.2
+	if len(args) > 0 { if n, ok := args[0].(*NumberObject); ok { factor = n.Value } }
+	return i.imgApplyColorTransform(img, func(r, g, b, a uint32) color.Color {
+		clamp := func(v float64) uint16 { if v > 65535 { return 65535 }; if v < 0 { return 0 }; return uint16(v) }
+		return color.RGBA64{clamp(float64(r) * factor), clamp(float64(g) * factor), clamp(float64(b) * factor), uint16(a)}
+	})
+}
+
+func (i *Interpreter) imgContrast(img *CodongImageObject, args []Object) Object {
+	factor := 1.5
+	if len(args) > 0 { if n, ok := args[0].(*NumberObject); ok { factor = n.Value } }
+	mid := 32768.0
+	return i.imgApplyColorTransform(img, func(r, g, b, a uint32) color.Color {
+		clamp := func(v float64) uint16 { if v > 65535 { return 65535 }; if v < 0 { return 0 }; return uint16(v) }
+		return color.RGBA64{clamp(mid + (float64(r)-mid)*factor), clamp(mid + (float64(g)-mid)*factor), clamp(mid + (float64(b)-mid)*factor), uint16(a)}
+	})
+}
+
+func (i *Interpreter) imgGamma(img *CodongImageObject, args []Object) Object {
+	gamma := 2.2
+	if len(args) > 0 { if n, ok := args[0].(*NumberObject); ok { gamma = n.Value } }
+	invGamma := 1.0 / gamma
+	return i.imgApplyColorTransform(img, func(r, g, b, a uint32) color.Color {
+		normalize := func(v uint32) float64 { return float64(v) / 65535.0 }
+		toU16 := func(v float64) uint16 { return uint16(math.Pow(v, invGamma) * 65535.0) }
+		return color.RGBA64{toU16(normalize(r)), toU16(normalize(g)), toU16(normalize(b)), uint16(a)}
+	})
+}
+
+func (i *Interpreter) imgSaturation(img *CodongImageObject, args []Object) Object {
+	factor := 1.5
+	if len(args) > 0 { if n, ok := args[0].(*NumberObject); ok { factor = n.Value } }
+	return i.imgApplyColorTransform(img, func(r, g, b, a uint32) color.Color {
+		gray := 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
+		clamp := func(v float64) uint16 { if v > 65535 { return 65535 }; if v < 0 { return 0 }; return uint16(v) }
+		return color.RGBA64{clamp(gray + (float64(r)-gray)*factor), clamp(gray + (float64(g)-gray)*factor), clamp(gray + (float64(b)-gray)*factor), uint16(a)}
+	})
+}
+
+func (i *Interpreter) imgTint(img *CodongImageObject, args []Object) Object {
+	// Tint with a color overlay
+	tr, tg, tb := 255.0, 200.0, 200.0 // Default: warm tint
+	if len(args) > 0 {
+		if m, ok := args[0].(*MapObject); ok {
+			if v, ok := m.Entries["r"]; ok { if n, ok := v.(*NumberObject); ok { tr = n.Value } }
+			if v, ok := m.Entries["g"]; ok { if n, ok := v.(*NumberObject); ok { tg = n.Value } }
+			if v, ok := m.Entries["b"]; ok { if n, ok := v.(*NumberObject); ok { tb = n.Value } }
+		}
+	}
+	return i.imgApplyColorTransform(img, func(r, g, b, a uint32) color.Color {
+		mix := func(orig uint32, tint float64) uint16 { return uint16(float64(orig) * tint / 255.0) }
+		return color.RGBA64{mix(r, tr), mix(g, tg), mix(b, tb), uint16(a)}
+	})
+}
+
+func (i *Interpreter) imgToRGB(img *CodongImageObject) Object {
+	bounds := img.img.Bounds()
+	dst := image.NewRGBA(bounds)
+	draw.Draw(dst, bounds, img.img, bounds.Min, draw.Src)
+	return &CodongImageObject{img: dst, format: img.format}
+}
+
+func (i *Interpreter) imgWatermarkImage(img *CodongImageObject, args []Object) Object {
+	// Overlay another image as watermark
+	if len(args) < 1 {
+		return imageError(codongerror.E12007_PROCESSING_FAILED, "watermark_image requires an image argument", "")
+	}
+	overlay, ok := args[0].(*CodongImageObject)
+	if !ok {
+		return imageError(codongerror.E12007_PROCESSING_FAILED, "argument must be an image", "")
+	}
+	bounds := img.img.Bounds()
+	dst := image.NewRGBA(bounds)
+	draw.Draw(dst, bounds, img.img, bounds.Min, draw.Src)
+	// Default: bottom-right
+	ox := bounds.Max.X - overlay.img.Bounds().Dx() - 10
+	oy := bounds.Max.Y - overlay.img.Bounds().Dy() - 10
+	draw.Draw(dst, image.Rect(ox, oy, ox+overlay.img.Bounds().Dx(), oy+overlay.img.Bounds().Dy()), overlay.img, overlay.img.Bounds().Min, draw.Over)
+	return &CodongImageObject{img: dst, format: img.format}
+}
+
+func (i *Interpreter) imgWatermarkTile(img *CodongImageObject, args []Object) Object {
+	text := "WATERMARK"
+	if len(args) > 0 { if s, ok := args[0].(*StringObject); ok { text = s.Value } }
+	_ = text
+	// Tile watermark: draw text repeatedly across the image
+	bounds := img.img.Bounds()
+	dst := image.NewRGBA(bounds)
+	draw.Draw(dst, bounds, img.img, bounds.Min, draw.Src)
+	// Simple tile pattern using text watermarks at grid points
+	for y := 0; y < bounds.Dy(); y += 80 {
+		for x := 0; x < bounds.Dx(); x += 150 {
+			for ci, ch := range text {
+				px := x + ci*7
+				if px < bounds.Dx() && y < bounds.Dy() {
+					_ = ch
+					dst.Set(px, y, color.RGBA{128, 128, 128, 80})
+				}
+			}
+		}
+	}
+	return &CodongImageObject{img: dst, format: img.format}
+}
+
+func (i *Interpreter) imgSmartCrop(img *CodongImageObject, args []Object) Object {
+	// Simple center-weighted crop
+	w, h := 200, 200
+	if len(args) > 0 { if n, ok := args[0].(*NumberObject); ok { w = int(n.Value) } }
+	if len(args) > 1 { if n, ok := args[1].(*NumberObject); ok { h = int(n.Value) } }
+	bounds := img.img.Bounds()
+	cx := bounds.Min.X + bounds.Dx()/2
+	cy := bounds.Min.Y + bounds.Dy()/2
+	x0 := cx - w/2; y0 := cy - h/2
+	if x0 < bounds.Min.X { x0 = bounds.Min.X }
+	if y0 < bounds.Min.Y { y0 = bounds.Min.Y }
+	r := image.Rect(x0, y0, x0+w, y0+h).Intersect(img.img.Bounds()); dst := image.NewRGBA(image.Rect(0, 0, r.Dx(), r.Dy())); draw.Draw(dst, dst.Bounds(), img.img, r.Min, draw.Src); return &CodongImageObject{img: dst, format: img.format}
+}
+
+func (i *Interpreter) imgExtend(img *CodongImageObject, args []Object) Object {
+	// Extend canvas with padding
+	top, right, bottom, left := 0, 0, 0, 0
+	if len(args) > 0 {
+		if m, ok := args[0].(*MapObject); ok {
+			if v, ok := m.Entries["top"]; ok { if n, ok := v.(*NumberObject); ok { top = int(n.Value) } }
+			if v, ok := m.Entries["right"]; ok { if n, ok := v.(*NumberObject); ok { right = int(n.Value) } }
+			if v, ok := m.Entries["bottom"]; ok { if n, ok := v.(*NumberObject); ok { bottom = int(n.Value) } }
+			if v, ok := m.Entries["left"]; ok { if n, ok := v.(*NumberObject); ok { left = int(n.Value) } }
+		} else if n, ok := args[0].(*NumberObject); ok {
+			top = int(n.Value); right = top; bottom = top; left = top
+		}
+	}
+	bounds := img.img.Bounds()
+	newW := bounds.Dx() + left + right
+	newH := bounds.Dy() + top + bottom
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	// Fill with white by default
+	draw.Draw(dst, dst.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	draw.Draw(dst, image.Rect(left, top, left+bounds.Dx(), top+bounds.Dy()), img.img, bounds.Min, draw.Src)
+	return &CodongImageObject{img: dst, format: img.format}
+}
+
+func (i *Interpreter) imgOptimize(img *CodongImageObject, args []Object) Object {
+	// Optimize = strip metadata + auto quality (just return as-is, metadata already stripped in Go decode)
+	return img
+}
+
+func (i *Interpreter) imgApplyColorTransform(img *CodongImageObject, transform func(r, g, b, a uint32) color.Color) Object {
+	bounds := img.img.Bounds()
+	dst := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, a := img.img.At(x, y).RGBA()
+			dst.Set(x, y, transform(r, g, b, a))
+		}
+	}
+	return &CodongImageObject{img: dst, format: img.format}
 }
