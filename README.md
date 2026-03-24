@@ -103,6 +103,52 @@ codong run server.cod
 
 ---
 
+## Let AI Write Codong -- Zero Installation Required
+
+You do not need to install Codong to start using it. Send the
+[`SPEC_FOR_AI.md`](./SPEC_FOR_AI.md) file to any LLM (Claude, GPT, Gemini, LLaMA)
+as a system prompt or context, and the AI can immediately write correct Codong code.
+
+**Step 1.** Copy the contents of [`SPEC_FOR_AI.md`](./SPEC_FOR_AI.md) (under 2,000 words).
+
+**Step 2.** Paste it into your AI conversation as context:
+
+```
+[Paste SPEC_FOR_AI.md contents here]
+
+Now write a Codong REST API that manages a user list with
+CRUD operations and SQLite storage.
+```
+
+**Step 3.** The AI generates valid Codong code:
+
+```
+db.connect("sqlite:///users.db")
+db.create_table("users", {id: "integer primary key autoincrement", name: "text", email: "text"})
+server = web.serve(port: 8080)
+server.get("/users", fn(req) { return web.json(db.find("users")) })
+server.post("/users", fn(req) { return web.json(db.insert("users", req.body), 201) })
+server.get("/users/:id", fn(req) { return web.json(db.find_one("users", {id: to_number(req.param("id"))})) })
+server.delete("/users/:id", fn(req) { db.delete("users", {id: to_number(req.param("id"))}); return web.json({}, 204) })
+```
+
+This works because Codong was designed with a single, unambiguous syntax for every operation.
+The AI does not need to choose between frameworks, import styles, or competing patterns.
+One correct way to write everything.
+
+| LLM Provider | Method |
+|-------------|--------|
+| Claude (Anthropic) | Paste SPEC into system prompt, or use [Prompt Caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) for repeated use |
+| GPT (OpenAI) | Paste SPEC as the first user message or system instruction |
+| Gemini (Google) | Paste SPEC as context in the conversation |
+| LLaMA / Ollama | Include SPEC in the system prompt via API or Ollama modelfile |
+| Any LLM | Works with any model that accepts a system prompt or context window |
+
+> **Benchmark it yourself**: Visit [codong.org/arena](https://codong.org/arena/) to see
+> real-time token consumption and generation speed comparisons between Codong and other languages.
+
+---
+
 ## Why Codong
 
 Most programming languages were designed for humans to write and machines to execute. Codong is
