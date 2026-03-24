@@ -29,28 +29,56 @@
 
 ---
 
-## Installation
+## Why Codong
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/brettinhere/Codong/main/install.sh | sh
+Most programming languages were designed for humans to write and machines to execute. Codong is
+designed for AI to write, humans to review, and machines to execute. It removes the three largest
+sources of friction in AI-generated code.
+
+### Problem 1: Choice Paralysis Burns Tokens
+
+Python has five or more ways to make an HTTP request. Every choice costs tokens and produces
+unpredictable output. Codong has exactly one way to do everything.
+
+| Task | Python Options | Codong |
+|------|---------------|--------|
+| HTTP request | requests, urllib, httpx, aiohttp, http.client | `http.get(url)` |
+| Web server | Flask, FastAPI, Django, Starlette, Tornado | `web.serve(port: N)` |
+| Database | SQLAlchemy, psycopg2, pymongo, peewee, Django ORM | `db.connect(url)` |
+| JSON parse | json.loads, orjson, ujson, simplejson | `json.parse(s)` |
+
+### Problem 2: Errors Are Unreadable to AI
+
+Stack traces are designed for humans. An AI agent spends hundreds of tokens parsing
+`Traceback (most recent call last)` before it can attempt a fix. In Codong, every error is
+structured JSON with a `fix` field that tells the AI exactly what to do.
+
+```json
+{
+  "error":   "db.find",
+  "code":    "E2001_NOT_FOUND",
+  "message": "table 'users' not found",
+  "fix":     "run db.migrate() to create the table",
+  "retry":   false
+}
 ```
 
-Or download a binary directly from [GitHub Releases](https://github.com/brettinhere/Codong/releases/latest):
+### Problem 3: Package Selection Wastes Context
 
-| Platform | Binary |
-|----------|--------|
-| Linux x86_64 | [codong-linux-amd64](https://github.com/brettinhere/Codong/releases/latest/download/codong-linux-amd64) |
-| Linux ARM64 | [codong-linux-arm64](https://github.com/brettinhere/Codong/releases/latest/download/codong-linux-arm64) |
-| macOS Intel | [codong-darwin-amd64](https://github.com/brettinhere/Codong/releases/latest/download/codong-darwin-amd64) |
-| macOS Apple Silicon | [codong-darwin-arm64](https://github.com/brettinhere/Codong/releases/latest/download/codong-darwin-arm64) |
+Before writing business logic, an AI must choose an HTTP library, a database driver, a JSON
+parser, resolve version conflicts, and configure them. Codong ships eight built-in modules that
+cover 90% of AI workloads. No package manager required.
 
-**Requirements:** `codong eval` works standalone. `codong run` and `codong build` require Go 1.22+.
+### The Result: 70%+ Token Savings
 
-Verify your installation:
-
-```bash
-codong version
-```
+| Token Cost | Python/JS | Codong | Savings |
+|-----------|-----------|--------|---------|
+| Choose HTTP framework | ~300 | 0 | 100% |
+| Choose database ORM | ~400 | 0 | 100% |
+| Parse error messages | ~500 | ~50 | 90% |
+| Resolve package versions | ~800 | 0 | 100% |
+| Write business logic | ~800 | ~800 | 0% |
+| **Total** | **~2,800** | **~850** | **~70%** |
 
 ---
 
@@ -154,56 +182,24 @@ One correct way to write everything.
 
 ---
 
-## Why Codong
+## Installation
 
-Most programming languages were designed for humans to write and machines to execute. Codong is
-designed for AI to write, humans to review, and machines to execute. It removes the three largest
-sources of friction in AI-generated code.
-
-### Problem 1: Choice Paralysis Burns Tokens
-
-Python has five or more ways to make an HTTP request. Every choice costs tokens and produces
-unpredictable output. Codong has exactly one way to do everything.
-
-| Task | Python Options | Codong |
-|------|---------------|--------|
-| HTTP request | requests, urllib, httpx, aiohttp, http.client | `http.get(url)` |
-| Web server | Flask, FastAPI, Django, Starlette, Tornado | `web.serve(port: N)` |
-| Database | SQLAlchemy, psycopg2, pymongo, peewee, Django ORM | `db.connect(url)` |
-| JSON parse | json.loads, orjson, ujson, simplejson | `json.parse(s)` |
-
-### Problem 2: Errors Are Unreadable to AI
-
-Stack traces are designed for humans. An AI agent spends hundreds of tokens parsing
-`Traceback (most recent call last)` before it can attempt a fix. In Codong, every error is
-structured JSON with a `fix` field that tells the AI exactly what to do.
-
-```json
-{
-  "error":   "db.find",
-  "code":    "E2001_NOT_FOUND",
-  "message": "table 'users' not found",
-  "fix":     "run db.migrate() to create the table",
-  "retry":   false
-}
+```bash
+curl -fsSL https://codong.org/install.sh | sh
 ```
 
-### Problem 3: Package Selection Wastes Context
+Or download a binary directly from [GitHub Releases](https://github.com/brettinhere/Codong/releases/latest):
 
-Before writing business logic, an AI must choose an HTTP library, a database driver, a JSON
-parser, resolve version conflicts, and configure them. Codong ships eight built-in modules that
-cover 90% of AI workloads. No package manager required.
+| Platform | Binary |
+|----------|--------|
+| Linux x86_64 | [codong-linux-amd64](https://github.com/brettinhere/Codong/releases/latest/download/codong-linux-amd64) |
+| Linux ARM64 | [codong-linux-arm64](https://github.com/brettinhere/Codong/releases/latest/download/codong-linux-arm64) |
+| macOS Intel | [codong-darwin-amd64](https://github.com/brettinhere/Codong/releases/latest/download/codong-darwin-amd64) |
+| macOS Apple Silicon | [codong-darwin-arm64](https://github.com/brettinhere/Codong/releases/latest/download/codong-darwin-arm64) |
 
-### The Result: 70%+ Token Savings
+**Requirements:** `codong eval` works standalone. `codong run` and `codong build` require Go 1.22+.
 
-| Token Cost | Python/JS | Codong | Savings |
-|-----------|-----------|--------|---------|
-| Choose HTTP framework | ~300 | 0 | 100% |
-| Choose database ORM | ~400 | 0 | 100% |
-| Parse error messages | ~500 | ~50 | 90% |
-| Resolve package versions | ~800 | 0 | 100% |
-| Write business logic | ~800 | ~800 | 0% |
-| **Total** | **~2,800** | **~850** | **~70%** |
+Verify: `codong version`
 
 ---
 
