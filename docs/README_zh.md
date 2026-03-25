@@ -33,12 +33,6 @@
 当 AI 模型用不同语言编写同一应用程序时，Codong 产生的代码量显著更少、token 消耗更低、完成速度更快。
 这些数据来自 [Codong Arena](https://codong.org/arena/)，其中任何模型都用每种语言编写相同的规范，结果自动测量。
 
-<p align="center">
-  <img src="docs/images/arena-benchmark.svg" alt="Codong Arena Benchmark — Posts CRUD with tags, search, pagination" width="100%" />
-  <br />
-  <sub>实时基准测试：Claude Sonnet 4 生成带标签、搜索和分页功能的 Posts CRUD API。<a href="https://codong.org/arena/">自己试试</a></sub>
-</p>
-
 | 指标 | Codong | Python | JavaScript | Java | Go |
 |------|--------|--------|------------|------|-----|
 | 总 Token 数 | **955** | 1,867 | 1,710 | 4,367 | 3,270 |
