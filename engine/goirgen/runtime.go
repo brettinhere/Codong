@@ -43,6 +43,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
+	goredis "github.com/redis/go-redis/v9"
 	_ "modernc.org/sqlite"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
@@ -791,17 +792,18 @@ func cRange(start, end float64) *CodongList {
 
 // --- Error Propagation (?) ---
 
-type cReturnSignal struct{ Value Value }
+type cReturnSignal struct{ Value Value; IsErrorProp bool }
 
 func cPropagate(v Value) Value {
-	// In assignment context (err = expr?), return the error for inspection
-	if _, ok := v.(*CodongError); ok {
-		return v
+	// If it's an error, propagate it up the call stack via panic
+	// IsErrorProp=true so function defer doesn't intercept it (only try/catch does)
+	if e, ok := v.(*CodongError); ok {
+		panic(&cReturnSignal{Value: e, IsErrorProp: true})
 	}
 	if m, ok := v.(*CodongMap); ok {
 		if errVal, ok := m.Entries["error"]; ok {
-			if _, ok := errVal.(*CodongError); ok {
-				return errVal
+			if e, ok := errVal.(*CodongError); ok {
+				panic(&cReturnSignal{Value: e, IsErrorProp: true})
 			}
 		}
 	}
@@ -811,7 +813,14 @@ func cPropagate(v Value) Value {
 func cPropagateStmt(v Value) {
 	// In standalone context (expr?), panic to propagate error up call stack
 	if e, ok := v.(*CodongError); ok {
-		panic(&cReturnSignal{Value: e})
+		panic(&cReturnSignal{Value: e, IsErrorProp: true})
+	}
+	if m, ok := v.(*CodongMap); ok {
+		if errVal, ok := m.Entries["error"]; ok {
+			if e, ok := errVal.(*CodongError); ok {
+				panic(&cReturnSignal{Value: e, IsErrorProp: true})
+			}
+		}
 	}
 }
 
@@ -1052,6 +1061,42 @@ func cWebServe(port int) Value {
 					cWebAuthContext = nil
 				})
 			}
+		} else if fn, ok := mw.(func(...Value) Value); ok {
+			// User-defined Codong middleware function: fn(req, next) -> response
+			userFn := fn
+			prevU := finalHandler
+			finalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Build minimal reqMap for the middleware
+				reqMap := cMap("method", r.Method, "path", r.URL.Path, "url", r.URL.String())
+				hm := cMap()
+				for k, v := range r.Header { cSet(hm, strings.ToLower(k), v[0]); cSet(hm, k, v[0]) }
+				cSet(reqMap, "headers", hm)
+				cSet(reqMap, "header", func(args ...Value) Value {
+					if len(args) > 0 { if v, ok := hm.Entries[strings.ToLower(toString(args[0]))]; ok { return v } }
+					return nil
+				})
+				ctxMap := cMap()
+				cSet(reqMap, "context", ctxMap)
+				// Create next function
+				var responded bool
+				nextFn := func(args ...Value) Value {
+					// Extract context from modified req
+					if len(args) > 0 {
+						if rm, ok := args[0].(*CodongMap); ok {
+							if ctx, ok := rm.Entries["context"].(*CodongMap); ok {
+								cWebAuthContext = ctx
+							}
+						}
+					}
+					responded = true
+					prevU.ServeHTTP(w, r)
+					return nil
+				}
+				result := userFn(reqMap, nextFn)
+				if !responded && result != nil {
+					writeResponse(w, r, result)
+				}
+			})
 		}
 	}
 	server := &http.Server{Addr: addr, Handler: finalHandler}
@@ -2030,7 +2075,7 @@ func cDbTransaction(fnVal Value, opts ...Value) Value {
 	// cTxAutoErr auto-panics with errors in transaction context
 	cTxAutoErr := func(result Value) Value {
 		if e, ok := result.(*CodongError); ok {
-			panic(&cReturnSignal{Value: e})
+			panic(&cReturnSignal{Value: e, IsErrorProp: true})
 		}
 		return result
 	}
@@ -2244,13 +2289,13 @@ func rowsToList(rows *sql.Rows) *CodongList {
 
 // --- HTTP Client ---
 
-func cHttpGet(url string, opts ...Value) *CodongMap {
+func cHttpGet(url string, opts ...Value) Value {
 	return cHttpDo("GET", url, nil, opts...)
 }
-func cHttpPost(url string, body Value, opts ...Value) *CodongMap {
+func cHttpPost(url string, body Value, opts ...Value) Value {
 	return cHttpDo("POST", url, body, opts...)
 }
-func cHttpDo(method, url string, body Value, opts ...Value) *CodongMap {
+func cHttpDo(method, url string, body Value, opts ...Value) Value {
 	var bodyReader io.Reader
 	if body != nil {
 		if s, ok := body.(string); ok {
@@ -2299,11 +2344,9 @@ func cHttpDo(method, url string, body Value, opts ...Value) *CodongMap {
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded") || strings.Contains(errStr, "context deadline") {
-			e := cError("E3001_TIMEOUT", "request timed out: " + errStr, "retry", true)
-			return cMap("status", float64(0), "ok", false, "body", errStr, "error", e)
+			return cError("E3001_TIMEOUT", "request timed out: " + errStr, "retry", true)
 		}
-		e := cError("E3005_CONN_FAILED", "connection failed: " + errStr)
-		return cMap("status", float64(0), "ok", false, "body", errStr, "error", e)
+		return cError("E3005_CONN_FAILED", "connection failed: " + errStr)
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
@@ -2313,22 +2356,18 @@ func cHttpDo(method, url string, body Value, opts ...Value) *CodongMap {
 	for k, v := range resp.Header {
 		cSet(hm, strings.ToLower(k), v[0])
 	}
-	// Check for HTTP error status codes
-	var httpErr *CodongError
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		httpErr = cError("E3003_HTTP_4XX", fmt.Sprintf("HTTP %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode)))
-	} else if resp.StatusCode >= 500 {
-		httpErr = cError("E3004_HTTP_5XX", fmt.Sprintf("HTTP %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode)))
-	}
 	// Build response with callable json() and text()
+	// For 4xx/5xx, also add an error field that ? operator can detect
 	m := cMap(
 		"status", float64(resp.StatusCode),
 		"ok", resp.StatusCode >= 200 && resp.StatusCode < 300,
 		"body", rawBody,
 		"headers", hm,
 	)
-	if httpErr != nil {
-		cSet(m, "error", httpErr)
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		cSet(m, "error", cError("E3003_HTTP_4XX", fmt.Sprintf("HTTP %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode))))
+	} else if resp.StatusCode >= 500 {
+		cSet(m, "error", cError("E3004_HTTP_5XX", fmt.Sprintf("HTTP %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode))))
 	}
 	cSet(m, "json", func(args ...Value) Value {
 		var data interface{}
@@ -2341,7 +2380,7 @@ func cHttpDo(method, url string, body Value, opts ...Value) *CodongMap {
 	return m
 }
 
-func cHttpRequest(optsVal Value) *CodongMap {
+func cHttpRequest(optsVal Value) Value {
 	m, ok := optsVal.(*CodongMap)
 	if !ok { return cMap("status", float64(0), "ok", false, "body", "invalid options") }
 	method := "GET"
@@ -2699,7 +2738,7 @@ func cFsRead(args ...Value) Value {
 	data, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", fmt.Sprintf("check path: %s", p))
+			return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", fmt.Sprintf("check file path: %s", p))
 		}
 		if os.IsPermission(err) {
 			return cError("E5002_PERMISSION_DENIED", fmt.Sprintf("permission denied: %s", toString(args[0])), "fix", "check file permissions")
@@ -3523,73 +3562,575 @@ var cDbLastInsertIdVal float64
 
 func cDbLastInsertId() Value { return cDbLastInsertIdVal }
 
-// --- Redis Module (Runtime stubs for generated Go code) ---
-// These are lightweight stubs. Full Redis requires the go-redis dependency
-// which is available in eval mode. For generated Go programs, these provide
-// the API surface and will work when redis server is available.
+// --- Redis Module ---
 
-var cRedisAddr string
+var cRedisClients = map[string]*goredis.Client{}
+var cRedisDefaultName string
+var cRedisDefaultClient *goredis.Client
+var cRedisMu sync.Mutex
+var cRedisCacheMu sync.Mutex
+var cRedisCacheStore = map[string]Value{}
+var cRedisCacheLoaderCounts = map[string]int{}
+var cRedisSingleflight = map[string]chan struct{}{}
+
+func cRedisGetClient() *goredis.Client {
+	if cRedisDefaultName != "" {
+		if c, ok := cRedisClients[cRedisDefaultName]; ok { return c }
+	}
+	return cRedisDefaultClient
+}
 
 func cRedisConnect(url string, opts Value) Value {
-	cRedisAddr = url
+	// Parse name from opts
+	name := ""
+	if m, ok := opts.(*CodongMap); ok && m != nil {
+		if n, ok := m.Entries["name"]; ok { name = toString(n) }
+	}
+	// Parse Redis URL
+	opt, err := goredis.ParseURL(url)
+	if err != nil {
+		return cError("E7001_REDIS_ERROR", "failed to parse Redis URL: " + err.Error())
+	}
+	client := goredis.NewClient(opt)
+	if name != "" {
+		cRedisClients[name] = client
+		if cRedisDefaultClient == nil { cRedisDefaultClient = client; cRedisDefaultName = name }
+	} else {
+		cRedisDefaultClient = client
+	}
 	return nil
 }
 
-func cRedisDisconnect() Value { cRedisAddr = ""; return nil }
+func cRedisDisconnect() Value {
+	if c := cRedisGetClient(); c != nil { c.Close() }
+	cRedisDefaultClient = nil
+	return nil
+}
+
+func cRedisUsing(name string) *CodongMap {
+	c, ok := cRedisClients[name]
+	if !ok { return nil }
+	proxy := cMap("_name", name)
+	ctx := context.Background()
+	cSet(proxy, "set", func(args ...Value) Value {
+		key := toString(args[0])
+		val := toString(args[1])
+		ttl := time.Duration(0)
+		if len(args) > 2 {
+			if m, ok := args[2].(*CodongMap); ok {
+				if t, ok := m.Entries["ttl"]; ok {
+					if d, err := time.ParseDuration(toString(t)); err == nil { ttl = d }
+				}
+			}
+		}
+		c.Set(ctx, key, val, ttl)
+		return true
+	})
+	cSet(proxy, "get", func(args ...Value) Value {
+		key := toString(args[0])
+		val, err := c.Get(ctx, key).Result()
+		if err != nil {
+			if len(args) > 1 { return args[1] }
+			return nil
+		}
+		return val
+	})
+	cSet(proxy, "delete", func(args ...Value) Value {
+		c.Del(ctx, toString(args[0]))
+		return nil
+	})
+	cSet(proxy, "exists", func(args ...Value) Value {
+		n, _ := c.Exists(ctx, toString(args[0])).Result()
+		return n > 0
+	})
+	return proxy
+}
+
+func cRedisPing() Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	r, err := c.Ping(context.Background()).Result()
+	if err != nil { return nil }
+	return r
+}
 
 func cRedisSet(key, value string, opts Value) Value {
-	return true // Stub - full impl needs go-redis at runtime
+	c := cRedisGetClient()
+	if c == nil { return false }
+	ttl := time.Duration(0)
+	xx := false
+	nx := false
+	if m, ok := opts.(*CodongMap); ok && m != nil {
+		if t, ok := m.Entries["ttl"]; ok {
+			ds := toString(t)
+			if d, err := time.ParseDuration(ds); err == nil { ttl = d }
+		}
+		if v, ok := m.Entries["xx"]; ok { xx = toBool(v) }
+		if v, ok := m.Entries["nx"]; ok { nx = toBool(v) }
+	}
+	ctx := context.Background()
+	if xx {
+		// Only set if key exists
+		exists, _ := c.Exists(ctx, key).Result()
+		if exists == 0 { return false }
+	}
+	if nx {
+		ok, err := c.SetNX(ctx, key, value, ttl).Result()
+		if err != nil { return false }
+		return ok
+	}
+	err := c.Set(ctx, key, value, ttl).Err()
+	return err == nil
 }
 
 func cRedisGet(key string, defaultVal Value) Value {
-	if defaultVal != nil { return defaultVal }
-	return nil
+	c := cRedisGetClient()
+	if c == nil { return defaultVal }
+	val, err := c.Get(context.Background(), key).Result()
+	if err != nil {
+		if defaultVal != nil { return defaultVal }
+		return nil
+	}
+	return val
 }
 
-func cRedisDelete(key Value) Value { return float64(0) }
-func cRedisExists(key string) Value { return false }
-func cRedisExpire(key, dur string) Value { return false }
-func cRedisTTL(key string) Value { return float64(-2) }
-func cRedisIncr(key string) Value { return float64(0) }
-func cRedisIncrBy(key string, amount Value) Value { return float64(0) }
-func cRedisDecr(key string) Value { return float64(0) }
+func cRedisDelete(key Value) Value {
+	c := cRedisGetClient()
+	if c == nil { return float64(0) }
+	keys := []string{}
+	switch k := key.(type) {
+	case string: keys = append(keys, k)
+	case *CodongList:
+		for _, e := range k.Elements { keys = append(keys, toString(e)) }
+	default: keys = append(keys, toString(key))
+	}
+	n, _ := c.Del(context.Background(), keys...).Result()
+	return float64(n)
+}
+
+func cRedisExists(key string) Value {
+	c := cRedisGetClient()
+	if c == nil { return false }
+	n, _ := c.Exists(context.Background(), key).Result()
+	return n > 0
+}
+
+func cRedisExpire(key, dur string) Value {
+	c := cRedisGetClient()
+	if c == nil { return false }
+	d, err := time.ParseDuration(dur)
+	if err != nil { return false }
+	ok, _ := c.Expire(context.Background(), key, d).Result()
+	return ok
+}
+
+func cRedisTTL(key string) Value {
+	c := cRedisGetClient()
+	if c == nil { return float64(-2) }
+	d, err := c.TTL(context.Background(), key).Result()
+	if err != nil { return float64(-2) }
+	if d < 0 { return float64(d.Seconds()) }
+	return float64(d.Seconds())
+}
+
+func cRedisIncr(key string) Value {
+	c := cRedisGetClient()
+	if c == nil { return float64(0) }
+	n, _ := c.Incr(context.Background(), key).Result()
+	return float64(n)
+}
+
+func cRedisIncrBy(key string, amount Value) Value {
+	c := cRedisGetClient()
+	if c == nil { return float64(0) }
+	n, _ := c.IncrBy(context.Background(), key, int64(toFloat(amount))).Result()
+	return float64(n)
+}
+
+func cRedisDecr(key string) Value {
+	c := cRedisGetClient()
+	if c == nil { return float64(0) }
+	n, _ := c.Decr(context.Background(), key).Result()
+	return float64(n)
+}
+
+func cRedisPipeline(fnVal Value) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	pipe := c.Pipeline()
+	ctx := context.Background()
+	var results []Value
+	// Create pipe proxy object with set/get/del/incr etc methods
+	pipeObj := cMap("_type", "redis_pipe")
+	cSet(pipeObj, "set", func(args ...Value) Value {
+		pipe.Set(ctx, toString(args[0]), toString(args[1]), 0)
+		results = append(results, nil) // placeholder
+		return nil
+	})
+	cSet(pipeObj, "get", func(args ...Value) Value {
+		pipe.Get(ctx, toString(args[0]))
+		results = append(results, nil) // placeholder
+		return nil
+	})
+	cSet(pipeObj, "del", func(args ...Value) Value {
+		pipe.Del(ctx, toString(args[0]))
+		results = append(results, nil)
+		return nil
+	})
+	cSet(pipeObj, "delete", func(args ...Value) Value {
+		pipe.Del(ctx, toString(args[0]))
+		results = append(results, nil)
+		return nil
+	})
+	cSet(pipeObj, "incr", func(args ...Value) Value {
+		pipe.Incr(ctx, toString(args[0]))
+		results = append(results, nil)
+		return nil
+	})
+	cSet(pipeObj, "zadd", func(args ...Value) Value {
+		key := toString(args[0])
+		if m, ok := args[1].(*CodongMap); ok {
+			members := []goredis.Z{}
+			for k, v := range m.Entries {
+				members = append(members, goredis.Z{Score: toFloat(v), Member: k})
+			}
+			pipe.ZAdd(ctx, key, members...)
+		}
+		results = append(results, nil)
+		return nil
+	})
+	cSet(pipeObj, "zremrangebyscore", func(args ...Value) Value {
+		pipe.ZRemRangeByScore(ctx, toString(args[0]), toString(args[1]), toString(args[2]))
+		results = append(results, nil)
+		return nil
+	})
+	cSet(pipeObj, "expire", func(args ...Value) Value {
+		d, _ := time.ParseDuration(toString(args[1]))
+		pipe.Expire(ctx, toString(args[0]), d)
+		results = append(results, nil)
+		return nil
+	})
+	// Call the callback with the pipe proxy
+	if f, ok := fnVal.(func(...Value) Value); ok {
+		f(pipeObj)
+	} else if f, ok := fnVal.(CodongFn); ok {
+		f(pipeObj)
+	}
+	// Execute pipeline
+	cmds, _ := pipe.Exec(ctx)
+	// Collect results using type switch for each command type
+	finalResults := make([]Value, len(cmds))
+	for i, cmd := range cmds {
+		switch c := cmd.(type) {
+		case *goredis.StringCmd:
+			val, e := c.Result()
+			if e != nil { finalResults[i] = nil } else { finalResults[i] = val }
+		case *goredis.IntCmd:
+			val, e := c.Result()
+			if e != nil { finalResults[i] = nil } else { finalResults[i] = float64(val) }
+		case *goredis.StatusCmd:
+			val, e := c.Result()
+			if e != nil { finalResults[i] = nil } else { finalResults[i] = val }
+		case *goredis.BoolCmd:
+			val, e := c.Result()
+			if e != nil { finalResults[i] = nil } else { finalResults[i] = val }
+		case *goredis.FloatCmd:
+			val, e := c.Result()
+			if e != nil { finalResults[i] = nil } else { finalResults[i] = val }
+		case *goredis.Cmd:
+			val, e := c.Result()
+			if e != nil { finalResults[i] = nil } else { finalResults[i] = goToValue(val) }
+		default:
+			finalResults[i] = nil
+		}
+	}
+	return &CodongList{Elements: finalResults}
+}
 
 func cRedisCache(key string, fn Value, opts Value) Value {
-	// Execute the loader function directly (no Redis caching in compiled mode stub)
-	if f, ok := fn.(CodongFn); ok { return f() }
+	c := cRedisGetClient()
+	if c == nil {
+		if f, ok := fn.(CodongFn); ok { return f() }
+		return nil
+	}
+	ctx := context.Background()
+	ttl := 5 * time.Minute
+	cacheNull := true
+	nullTTLDivisor := float64(10)
+	if m, ok := opts.(*CodongMap); ok && m != nil {
+		if t, ok := m.Entries["ttl"]; ok {
+			if d, err := time.ParseDuration(toString(t)); err == nil { ttl = d }
+		}
+		if v, ok := m.Entries["cache_null"]; ok { cacheNull = toBool(v) }
+	}
+	// Singleflight: if another goroutine is loading this key, wait for it
+	cRedisCacheMu.Lock()
+	if ch, loading := cRedisSingleflight[key]; loading {
+		cRedisCacheMu.Unlock()
+		<-ch // wait for the other loader to finish
+		// Try cache again
+		val, err := c.Get(ctx, key).Result()
+		if err == nil {
+			if val == "__codong_null__" { return nil }
+			return val // return raw string
+		}
+		return nil
+	}
+	ch := make(chan struct{})
+	cRedisSingleflight[key] = ch
+	cRedisCacheMu.Unlock()
+	defer func() {
+		cRedisCacheMu.Lock()
+		delete(cRedisSingleflight, key)
+		close(ch)
+		cRedisCacheMu.Unlock()
+	}()
+	// Check cache first
+	val, err := c.Get(ctx, key).Result()
+	if err == nil {
+		if val == "__codong_null__" { return nil }
+		return val // return raw string
+	}
+	// Cache miss — call loader (catch panics so singleflight is released)
+	cRedisCacheMu.Lock()
+	cRedisCacheLoaderCounts[key]++
+	cRedisCacheMu.Unlock()
+	var result Value
+	var loaderPanic interface{}
+	func() {
+		defer func() { loaderPanic = recover() }()
+		if f, ok := fn.(CodongFn); ok { result = f() }
+	}()
+	if loaderPanic != nil {
+		panic(loaderPanic) // re-throw after releasing singleflight
+	}
+	// If loader returned a CodongError (from ? operator), don't cache — propagate error
+	if ce, ok := result.(*CodongError); ok {
+		panic(&cReturnSignal{Value: ce, IsErrorProp: true})
+	}
+	// Store in cache
+	if result == nil {
+		if cacheNull {
+			nullTTL := time.Duration(float64(ttl) / nullTTLDivisor)
+			c.Set(ctx, key, "__codong_null__", nullTTL)
+		}
+	} else {
+		jsonStr := cJsonStringify(result)
+		c.Set(ctx, key, toString(jsonStr), ttl)
+	}
+	return result
+}
+
+func cRedisInvalidate(key string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	c.Del(context.Background(), key)
 	return nil
 }
 
-func cRedisInvalidate(key string) Value { return nil }
-func cRedisInvalidatePattern(pattern string) Value { return nil }
+func cRedisInvalidatePattern(pattern string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	ctx := context.Background()
+	keys, _ := c.Keys(ctx, pattern).Result()
+	if len(keys) > 0 { c.Del(ctx, keys...) }
+	return nil
+}
 
 func cRedisLock(key string, opts Value) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	lockTTL := 10 * time.Second
+	timeout := 5 * time.Second
+	retryInterval := 100 * time.Millisecond
+	if m, ok := opts.(*CodongMap); ok && m != nil {
+		if t, ok := m.Entries["ttl"]; ok {
+			if d, err := time.ParseDuration(toString(t)); err == nil { lockTTL = d }
+		}
+		if t, ok := m.Entries["timeout"]; ok {
+			if d, err := time.ParseDuration(toString(t)); err == nil { timeout = d }
+		}
+		if t, ok := m.Entries["retry"]; ok {
+			if d, err := time.ParseDuration(toString(t)); err == nil { retryInterval = d }
+		}
+	}
+	ctx := context.Background()
 	lockID := cGenerateRandomHex(16)
-	lockObj := cMap("key", key, "_lock_id", lockID)
-	cSet(lockObj, "release", func(args ...Value) Value { return nil })
-	return lockObj
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ok, err := c.SetNX(ctx, key, lockID, lockTTL).Result()
+		if err == nil && ok {
+			lockObj := cMap("key", key, "_lock_id", lockID, "ttl", lockTTL.String())
+			cSet(lockObj, "release", func(args ...Value) Value {
+				// Only release if we still own the lock
+				val, err := c.Get(ctx, key).Result()
+				if err == nil && val == lockID {
+					c.Del(ctx, key)
+				}
+				return nil
+			})
+			// Watchdog: extend TTL periodically
+			go func() {
+				ticker := time.NewTicker(lockTTL / 3)
+				defer ticker.Stop()
+				for range ticker.C {
+					val, err := c.Get(ctx, key).Result()
+					if err != nil || val != lockID { return }
+					c.Expire(ctx, key, lockTTL)
+				}
+			}()
+			return lockObj
+		}
+		time.Sleep(retryInterval)
+	}
+	return nil // timeout
 }
 
-func cRedisPublish(channel, message string) Value { return float64(0) }
+func cRedisPublish(channel, message string) Value {
+	c := cRedisGetClient()
+	if c == nil { return float64(0) }
+	n, _ := c.Publish(context.Background(), channel, message).Result()
+	return float64(n)
+}
 
 func cRedisSubscribe(channel string, handler Value) Value {
-	sub := cMap("channel", channel)
-	cSet(sub, "unsubscribe", func(args ...Value) Value { return nil })
-	return sub
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	sub := c.Subscribe(ctx, channel)
+	subObj := cMap("channel", channel)
+	cSet(subObj, "unsubscribe", func(args ...Value) Value {
+		cancel()
+		sub.Close()
+		return nil
+	})
+	go func() {
+		ch := sub.Channel()
+		for msg := range ch {
+			if f, ok := handler.(CodongFn); ok {
+				f(msg.Payload)
+			} else if f, ok := handler.(func(...Value) Value); ok {
+				f(msg.Payload)
+			}
+		}
+	}()
+	return subObj
 }
 
-func cRedisZadd(key string, members Value) Value { return float64(0) }
-func cRedisZrange(key string, start, stop Value) Value { return &CodongList{} }
-func cRedisZrevrange(key string, start, stop Value) Value { return &CodongList{} }
-func cRedisZrank(key, member string) Value { return nil }
-func cRedisZrevrank(key, member string) Value { return nil }
-func cRedisZscore(key, member string) Value { return nil }
-func cRedisZincrby(key, member string, incr Value) Value { return nil }
+func cRedisZadd(key string, members Value) Value {
+	c := cRedisGetClient()
+	if c == nil { return float64(0) }
+	m, ok := members.(*CodongMap)
+	if !ok { return float64(0) }
+	zMembers := []goredis.Z{}
+	for k, v := range m.Entries {
+		zMembers = append(zMembers, goredis.Z{Score: toFloat(v), Member: k})
+	}
+	n, _ := c.ZAdd(context.Background(), key, zMembers...).Result()
+	return float64(n)
+}
+
+func cRedisZrange(key string, start, stop Value) Value {
+	c := cRedisGetClient()
+	if c == nil { return &CodongList{} }
+	vals, _ := c.ZRange(context.Background(), key, int64(toFloat(start)), int64(toFloat(stop))).Result()
+	elems := make([]Value, len(vals))
+	for i, v := range vals { elems[i] = v }
+	return &CodongList{Elements: elems}
+}
+
+func cRedisZrevrange(key string, start, stop Value, opts Value) Value {
+	c := cRedisGetClient()
+	if c == nil { return &CodongList{} }
+	withScores := false
+	if m, ok := opts.(*CodongMap); ok && m != nil {
+		if v, ok := m.Entries["with_scores"]; ok { withScores = toBool(v) }
+	}
+	if withScores {
+		zs, _ := c.ZRevRangeWithScores(context.Background(), key, int64(toFloat(start)), int64(toFloat(stop))).Result()
+		elems := make([]Value, len(zs))
+		for i, z := range zs {
+			elems[i] = cMap("member", fmt.Sprintf("%v", z.Member), "score", z.Score)
+		}
+		return &CodongList{Elements: elems}
+	}
+	vals, _ := c.ZRevRange(context.Background(), key, int64(toFloat(start)), int64(toFloat(stop))).Result()
+	elems := make([]Value, len(vals))
+	for i, v := range vals { elems[i] = v }
+	return &CodongList{Elements: elems}
+}
+
+func cRedisZcard(key string) Value {
+	c := cRedisGetClient()
+	if c == nil { return float64(0) }
+	n, _ := c.ZCard(context.Background(), key).Result()
+	return float64(n)
+}
+
+func cRedisZrank(key, member string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	n, err := c.ZRank(context.Background(), key, member).Result()
+	if err != nil { return nil }
+	return float64(n)
+}
+
+func cRedisZrevrank(key, member string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	n, err := c.ZRevRank(context.Background(), key, member).Result()
+	if err != nil { return nil }
+	return float64(n)
+}
+
+func cRedisZscore(key, member string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	s, err := c.ZScore(context.Background(), key, member).Result()
+	if err != nil { return nil }
+	return float64(s)
+}
+
+func cRedisZincrby(key, member string, incr Value) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	s, err := c.ZIncrBy(context.Background(), key, toFloat(incr), member).Result()
+	if err != nil { return nil }
+	return float64(s)
+}
 
 func cRedisRateLimiter(config Value) Value {
-	limiter := cMap()
+	c := cRedisGetClient()
+	m, ok := config.(*CodongMap)
+	if !ok { return nil }
+	key := toString(m.Entries["key"])
+	rate := int64(toFloat(m.Entries["rate"]))
+	burst := int64(toFloat(m.Entries["burst"]))
+	if burst == 0 { burst = rate }
+	window := 60 * time.Second
+	if w, ok := m.Entries["window"]; ok {
+		if d, err := time.ParseDuration(toString(w)); err == nil { window = d }
+	}
+	limiter := cMap("key", key, "rate", float64(rate), "burst", float64(burst))
 	cSet(limiter, "allow", func(args ...Value) Value {
-		return cMap("allowed", true, "remaining", float64(-1), "retry_after_ms", float64(0))
+		if c == nil { return cMap("allowed", true, "remaining", float64(burst)) }
+		ctx := context.Background()
+		now := time.Now()
+		// Build per-user key if argument provided
+		rlKey := key
+		if len(args) > 0 && args[0] != nil { rlKey = key + ":" + toString(args[0]) }
+		windowStart := now.Add(-window).UnixMilli()
+		// Remove old entries
+		c.ZRemRangeByScore(ctx, rlKey, "0", fmt.Sprintf("%d", windowStart))
+		// Count current entries
+		count, _ := c.ZCard(ctx, rlKey).Result()
+		if count >= burst {
+			return cMap("allowed", false, "remaining", float64(0))
+		}
+		// Add new entry
+		c.ZAdd(ctx, rlKey, goredis.Z{Score: float64(now.UnixMilli()), Member: fmt.Sprintf("%d", now.UnixNano())})
+		c.Expire(ctx, rlKey, window)
+		return cMap("allowed", true, "remaining", float64(burst-count-1))
 	})
 	return limiter
 }
@@ -4307,7 +4848,7 @@ func cOAuthSignRefreshToken(claims Value) Value {
 func cOAuthVerifyJWT(token string) Value {
 	claims, err := cVerifyHS256(token, cJWTSecret)
 	if err != nil { return nil }
-	if exp, ok := claims["exp"].(float64); ok { if time.Now().Unix() > int64(exp) { return nil } }
+	if exp, ok := claims["exp"].(float64); ok { if time.Now().Unix() >= int64(exp) { return nil } }
 	result := cMap()
 	for k, v := range claims {
 		switch val := v.(type) {

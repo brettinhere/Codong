@@ -153,9 +153,11 @@ func (i *Interpreter) evalFsModuleMethod(prop string) Object {
 				data, err := os.ReadFile(absPath)
 				if err != nil {
 					if os.IsNotExist(err) {
-						return fsError("E5001_FILE_NOT_FOUND",
+						return &ErrorObject{IsRuntime: false, Error: codongerror.New(
+							"E5001_FILE_NOT_FOUND",
 							fmt.Sprintf("file not found: %s", path),
-							fmt.Sprintf("check path: %s", absPath))
+							codongerror.WithFix(fmt.Sprintf("check file path: %s", absPath)),
+						)}
 					}
 					if os.IsPermission(err) {
 						return fsError("E5002_PERMISSION_DENIED",

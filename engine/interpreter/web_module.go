@@ -135,7 +135,7 @@ func (interp *Interpreter) evalWebModuleMethod(method string) Object {
 					Order: []string{"_type"},
 				}
 			default:
-				return newRuntimeError(codongerror.E3003_ROUTE_ERROR,
+				return newRuntimeError(codongerror.E3007_ROUTE_ERROR,
 					fmt.Sprintf("unknown web method: %s", method), "")
 			}
 		},

@@ -17,6 +17,8 @@ type Generator struct {
 	declared    map[string]bool // tracks declared variables
 	consts      map[string]bool // tracks const bindings
 	inTryCatch  bool            // true when generating code inside a try/catch block
+	inLoop      bool            // true when generating code inside a for/while loop
+	tcCounter   int             // unique counter for try/catch flow control variables
 	sourceDir   string          // directory of the main .cod file (for resolving imports)
 	imported    map[string]bool // tracks already imported files to prevent cycles
 }
@@ -457,22 +459,28 @@ func (g *Generator) genForIn(s *parser.ForInStatement) {
 		g.writef("var %s Value", goVarName)
 		g.declared[varName] = true
 	}
+	prevInLoop := g.inLoop
+	g.inLoop = true
 	g.writef("for _, _item := range toList(%s).Elements {", iter)
 	g.indent++
 	g.writef("%s = _item", goVarName)
 	g.genBlock(s.Body)
 	g.indent--
 	g.write("}")
+	g.inLoop = prevInLoop
 	g.writef("_ = %s", goVarName)
 }
 
 func (g *Generator) genWhile(s *parser.WhileStatement) {
+	prevInLoop := g.inLoop
+	g.inLoop = true
 	cond := g.genExpr(s.Condition)
 	g.writef("for isTruthy(%s) {", cond)
 	g.indent++
 	g.genBlock(s.Body)
 	g.indent--
 	g.write("}")
+	g.inLoop = prevInLoop
 }
 
 func (g *Generator) genMatch(s *parser.MatchStatement) {
@@ -525,6 +533,11 @@ func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 	g.writef("_ = %s", goVar)
 	prevInTryCatch := g.inTryCatch
 	g.inTryCatch = true
+	// Use unique variable name for each try/catch to avoid redeclaration
+	tcIdx := g.tcCounter
+	g.tcCounter++
+	flowVar := fmt.Sprintf("_tcFlowCtl%d", tcIdx)
+	g.writef("var %s string; _ = %s", flowVar, flowVar)
 	g.write("func() {")
 	g.indent++
 	g.write("defer func() {")
@@ -558,8 +571,8 @@ func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 	g.write("panic(_r)")
 	g.indent--
 	g.write("}")
-	// Handle break/continue signals from inside try block
-	g.writef("if _bs, ok := _r.(string); ok && (_bs == \"__codong_break__\" || _bs == \"__codong_continue__\") { return }")
+	// Handle break/continue signals from inside try block — propagate via flag
+	g.writef("if _bs, ok := _r.(string); ok && (_bs == \"__codong_break__\" || _bs == \"__codong_continue__\") { %s = _bs; return }", flowVar)
 	// Re-panic for non-error panics
 	g.write("panic(_r)")
 	g.indent--
@@ -570,6 +583,11 @@ func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 	g.genBlock(s.Try)
 	g.indent--
 	g.write("}()")
+	// After try/catch closure — check break/continue flag (only if inside a loop)
+	if g.inLoop {
+		g.writef("if %s == \"__codong_break__\" { break }", flowVar)
+		g.writef("if %s == \"__codong_continue__\" { continue }", flowVar)
+	}
 	g.inTryCatch = prevInTryCatch
 }
 
@@ -993,6 +1011,12 @@ func (g *Generator) genRedisCall(method string, args []string, named map[string]
 		return fmt.Sprintf("cRedisConnect(toString(%s), nil)", args[0])
 	case "disconnect":
 		return "cRedisDisconnect()"
+	case "ping":
+		return "cRedisPing()"
+	case "pipeline":
+		return fmt.Sprintf("cRedisPipeline(%s)", args[0])
+	case "using":
+		return fmt.Sprintf("cRedisUsing(toString(%s))", args[0])
 	case "set":
 		if namedArg != "" {
 			return fmt.Sprintf("cRedisSet(toString(%s), toString(%s), %s)", args[0], args[1], namedArg)
@@ -1046,7 +1070,12 @@ func (g *Generator) genRedisCall(method string, args []string, named map[string]
 	case "zrange":
 		return fmt.Sprintf("cRedisZrange(toString(%s), %s, %s)", args[0], args[1], args[2])
 	case "zrevrange":
-		return fmt.Sprintf("cRedisZrevrange(toString(%s), %s, %s)", args[0], args[1], args[2])
+		if namedArg != "" {
+			return fmt.Sprintf("cRedisZrevrange(toString(%s), %s, %s, %s)", args[0], args[1], args[2], namedArg)
+		}
+		return fmt.Sprintf("cRedisZrevrange(toString(%s), %s, %s, nil)", args[0], args[1], args[2])
+	case "zcard":
+		return fmt.Sprintf("cRedisZcard(toString(%s))", args[0])
 	case "zrank":
 		return fmt.Sprintf("cRedisZrank(toString(%s), toString(%s))", args[0], args[1])
 	case "zrevrank":

@@ -158,6 +158,17 @@ func (p *Parser) expectPeek(t lexer.TokenType) bool {
 	return false
 }
 
+func (p *Parser) isKeywordToken(t lexer.TokenType) bool {
+	switch t {
+	case lexer.FN, lexer.IF, lexer.ELSE, lexer.RETURN, lexer.FOR, lexer.IN,
+		lexer.WHILE, lexer.MATCH, lexer.CONST, lexer.BREAK, lexer.CONTINUE,
+		lexer.IMPORT, lexer.EXPORT, lexer.TRY, lexer.CATCH, lexer.GO,
+		lexer.TYPE, lexer.INTERFACE, lexer.TRUE, lexer.FALSE, lexer.NULL:
+		return true
+	}
+	return false
+}
+
 func (p *Parser) peekError(t lexer.TokenType) {
 	p.errors = append(p.errors, fmt.Sprintf("line %d: expected %s, got %s",
 		p.peekToken.Line, t, p.peekToken.Type))
@@ -636,11 +647,24 @@ func (p *Parser) parseStringLiteral() Expression {
 	// Check for interpolation: contains { and }
 	if strings.Contains(raw, "{") && strings.Contains(raw, "}") {
 		// Skip interpolation if it looks like a JSON literal:
-		// The first { is immediately followed by " (e.g., {"key":...})
+		// JSON pattern: {"key": value} — after the string key there's a colon
 		braceIdx := strings.Index(raw, "{")
 		if braceIdx >= 0 && braceIdx+1 < len(raw) && raw[braceIdx+1] == '"' {
-			// Likely a JSON string — don't interpolate
-			return &StringLiteral{Token: p.curToken, Value: raw}
+			// Find the closing quote of the key string
+			keyEnd := strings.Index(raw[braceIdx+2:], "\"")
+			if keyEnd >= 0 {
+				afterKey := braceIdx + 2 + keyEnd + 1
+				// JSON: after the key string, next non-space char should be ':'
+				isJSON := false
+				for j := afterKey; j < len(raw); j++ {
+					if raw[j] == ' ' || raw[j] == '\t' { continue }
+					if raw[j] == ':' { isJSON = true }
+					break
+				}
+				if isJSON {
+					return &StringLiteral{Token: p.curToken, Value: raw}
+				}
+			}
 		}
 		return p.parseInterpolatedString(raw)
 	}
@@ -724,7 +748,12 @@ func (p *Parser) parseMapLiteral() Expression {
 	p.skipNewlines()
 	for p.curToken.Type != lexer.RBRACE && p.curToken.Type != lexer.EOF {
 		entry := MapEntry{}
-		entry.Key = p.parseExpression(LOWEST)
+		// Allow keywords (type, fn, if, etc.) as map keys by treating them as identifiers
+		if p.isKeywordToken(p.curToken.Type) && p.peekToken.Type == lexer.COLON {
+			entry.Key = &Identifier{Token: p.curToken, Value: p.curToken.Literal}
+		} else {
+			entry.Key = p.parseExpression(LOWEST)
+		}
 		if !p.expectPeek(lexer.COLON) {
 			return nil
 		}

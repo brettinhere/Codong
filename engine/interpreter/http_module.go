@@ -50,7 +50,7 @@ func (interp *Interpreter) evalHttpModuleMethod(method string) Object {
 			case "request":
 				return i.httpGenericRequest(args)
 			default:
-				return newRuntimeError(codongerror.E3001_SERVER_ERROR,
+				return newRuntimeError(codongerror.E3009_SERVER_ERROR,
 					fmt.Sprintf("unknown http method: %s", method), "")
 			}
 		},
@@ -87,7 +87,7 @@ func (i *Interpreter) httpRequest(method string, args []Object) Object {
 			goVal := objectToGoValue(body)
 			jsonBytes, err := json.Marshal(goVal)
 			if err != nil {
-				return newRuntimeError(codongerror.E3001_SERVER_ERROR,
+				return newRuntimeError(codongerror.E3009_SERVER_ERROR,
 					"failed to serialize body to JSON", "")
 			}
 			bodyReader = bytes.NewReader(jsonBytes)
@@ -108,8 +108,18 @@ func (i *Interpreter) httpRequest(method string, args []Object) Object {
 			}
 		}
 		if t, exists := opts.Entries["timeout"]; exists {
-			if n, ok := t.(*NumberObject); ok {
-				timeout = time.Duration(n.Value) * time.Second
+			switch tv := t.(type) {
+			case *NumberObject:
+				timeout = time.Duration(tv.Value) * time.Second
+			case *StringObject:
+				if d, err := time.ParseDuration(tv.Value); err == nil {
+					timeout = d
+				}
+			}
+			if ct, exists := opts.Entries["content_type"]; exists {
+				if s, ok := ct.(*StringObject); ok {
+					contentType = s.Value
+				}
 			}
 		}
 	}
@@ -118,8 +128,9 @@ func (i *Interpreter) httpRequest(method string, args []Object) Object {
 	req, err := http.NewRequest(method, url.Value, bodyReader)
 	if err != nil {
 		return &ErrorObject{IsRuntime: false, Error: codongerror.New(
-			codongerror.E3001_SERVER_ERROR,
-			fmt.Sprintf("failed to create request: %s", err.Error()),
+			codongerror.E3005_CONN_FAILED,
+			fmt.Sprintf("invalid URL or request: %s", err.Error()),
+			codongerror.WithFix("check URL format"),
 		)}
 	}
 
@@ -135,9 +146,18 @@ func (i *Interpreter) httpRequest(method string, args []Object) Object {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded") || strings.Contains(errStr, "context deadline") {
+			return &ErrorObject{IsRuntime: false, Error: codongerror.New(
+				codongerror.E3001_TIMEOUT,
+				fmt.Sprintf("request timed out: %s", errStr),
+				codongerror.WithFix("increase timeout or check network"),
+				codongerror.WithRetry(true),
+			)}
+		}
 		return &ErrorObject{IsRuntime: false, Error: codongerror.New(
-			codongerror.E3001_SERVER_ERROR,
-			fmt.Sprintf("request failed: %s", err.Error()),
+			codongerror.E3005_CONN_FAILED,
+			fmt.Sprintf("connection failed: %s", errStr),
 			codongerror.WithFix("check URL and network connectivity"),
 		)}
 	}
@@ -147,7 +167,7 @@ func (i *Interpreter) httpRequest(method string, args []Object) Object {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return &ErrorObject{IsRuntime: false, Error: codongerror.New(
-			codongerror.E3001_SERVER_ERROR,
+			codongerror.E3009_SERVER_ERROR,
 			fmt.Sprintf("failed to read response body: %s", err.Error()),
 		)}
 	}
@@ -209,7 +229,7 @@ func (i *Interpreter) evalHttpResponseMemberAccess(resp *HttpResponseObject, pro
 				var data interface{}
 				if err := json.Unmarshal(resp.RawBody, &data); err != nil {
 					return &ErrorObject{IsRuntime: false, Error: codongerror.New(
-						codongerror.E3001_SERVER_ERROR,
+						codongerror.E3009_SERVER_ERROR,
 						fmt.Sprintf("failed to parse JSON: %s", err.Error()),
 						codongerror.WithFix("response body is not valid JSON, use .text() instead"),
 					)}

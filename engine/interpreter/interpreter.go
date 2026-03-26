@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -354,9 +355,74 @@ func (i *Interpreter) Eval(node parser.Node, env *Environment) Object {
 		if _, ok := val.(*ErrorObject); ok {
 			return &ReturnValue{Value: val}
 		}
+		// Check map with "error" key — Codong convention for returning errors as maps
+		if m, ok := val.(*MapObject); ok {
+			if errVal, exists := m.Entries["error"]; exists && errVal != NULL_OBJ {
+				// Convert error map to ErrorObject
+				errObj := i.mapToErrorObject(errVal)
+				if errObj != nil {
+					return &ReturnValue{Value: errObj}
+				}
+			}
+		}
+		// Check HttpResponseObject with ok=false: convert to error
+		if resp, ok := val.(*HttpResponseObject); ok && !resp.Ok {
+			var errCode string
+			if resp.Status >= 400 && resp.Status < 500 {
+				errCode = codongerror.E3003_HTTP_4XX
+			} else if resp.Status >= 500 {
+				errCode = codongerror.E3004_HTTP_5XX
+			} else {
+				errCode = codongerror.E3009_SERVER_ERROR
+			}
+			return &ReturnValue{Value: &ErrorObject{IsRuntime: false, Error: codongerror.New(
+				errCode,
+				fmt.Sprintf("HTTP %d: %s", resp.Status, http.StatusText(resp.Status)),
+			)}}
+		}
 		return val
 	}
 	return NULL_OBJ
+}
+
+// mapToErrorObject converts a map-style error (or error sub-map) to an ErrorObject.
+// Handles both {code:"...", message:"..."} and {error:{code:"...", message:"..."}} forms.
+func (i *Interpreter) mapToErrorObject(errVal Object) *ErrorObject {
+	em, ok := errVal.(*MapObject)
+	if !ok {
+		return nil
+	}
+	code := ""
+	msg := ""
+	fix := ""
+	retry := false
+	if c, ok2 := em.Entries["code"]; ok2 {
+		if s, ok3 := c.(*StringObject); ok3 {
+			code = s.Value
+		}
+	}
+	if m, ok2 := em.Entries["message"]; ok2 {
+		if s, ok3 := m.(*StringObject); ok3 {
+			msg = s.Value
+		}
+	}
+	if f, ok2 := em.Entries["fix"]; ok2 {
+		if s, ok3 := f.(*StringObject); ok3 {
+			fix = s.Value
+		}
+	}
+	if r, ok2 := em.Entries["retry"]; ok2 {
+		if b, ok3 := r.(*BoolObject); ok3 {
+			retry = b.Value
+		}
+	}
+	if code == "" && msg == "" {
+		return nil
+	}
+	ce := codongerror.New(code, msg)
+	ce.Fix = fix
+	ce.Retry = retry
+	return &ErrorObject{IsRuntime: false, Error: ce}
 }
 
 func (i *Interpreter) evalProgram(prog *parser.Program, env *Environment) Object {
@@ -398,12 +464,10 @@ func (i *Interpreter) evalAssign(node *parser.AssignStatement, env *Environment)
 	if isRuntimeError(val) {
 		return val
 	}
-	// If the value is a ReturnValue (from ? error propagation), unwrap it
-	// so that assignment captures the error instead of propagating.
-	captured := false
-	if rv, ok := val.(*ReturnValue); ok {
-		val = rv.Value
-		captured = true
+	// If the value is a ReturnValue (from ? error propagation),
+	// let it propagate up — the enclosing function should return the error.
+	if _, ok := val.(*ReturnValue); ok {
+		return val
 	}
 	// _ = expr discards the return value (side-effect only)
 	if node.Name.Value == "_" {
@@ -415,11 +479,6 @@ func (i *Interpreter) evalAssign(node *parser.AssignStatement, env *Environment)
 			"remove const declaration or use a different variable name")
 	}
 	env.Set(node.Name.Value, val)
-	// If we captured a propagated error via ?, return NULL to prevent
-	// the error from halting the program — the user captured it explicitly.
-	if captured {
-		return NULL_OBJ
-	}
 	return val
 }
 
