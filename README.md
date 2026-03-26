@@ -13,9 +13,10 @@
 </p>
 
 <p align="center">
+  <a href="./CHANGELOG_v0.1.1.md"><img src="https://img.shields.io/badge/version-v0.1.1_(2026--03--26)-informational.svg" alt="v0.1.1"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/language-Codong-orange.svg" alt="Language: Codong">
-  <img src="https://img.shields.io/badge/tests-500%20passed-brightgreen.svg" alt="Tests: 500 passed">
+  <img src="https://img.shields.io/badge/tests-1201%20passed-brightgreen.svg" alt="Tests: 1201 passed">
   <a href="https://codong.org/arena/"><img src="https://img.shields.io/badge/arena-live-purple.svg" alt="Arena: Live"></a>
 </p>
 
