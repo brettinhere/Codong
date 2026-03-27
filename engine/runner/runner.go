@@ -297,8 +297,8 @@ func translateGoError(stderr string) string {
 		case strings.Contains(msg, "declared and not used:"):
 			varName := strings.TrimSpace(strings.TrimPrefix(msg, "declared and not used:"))
 			ce.Code = "E1001_SYNTAX_ERROR"
-			ce.Message = fmt.Sprintf("cannot assign to const '%s'", varName)
-			ce.Fix = "remove const declaration or use a different variable name"
+			ce.Message = fmt.Sprintf("variable '%s' is declared but never used", varName)
+			ce.Fix = fmt.Sprintf("use or remove the variable '%s'", varName)
 
 		case strings.Contains(msg, "cannot use _ as value"):
 			ce.Code = "E1001_SYNTAX_ERROR"

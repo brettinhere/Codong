@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand"
 	"net/http"
 	"regexp"
 	"sort"
@@ -55,8 +56,14 @@ func (n *NullObject) Inspect() string { return "null" }
 
 type ListObject struct{ Elements []Object }
 
-func (l *ListObject) Type() string    { return "list" }
-func (l *ListObject) Inspect() string { return "[...]" }
+func (l *ListObject) Type() string { return "list" }
+func (l *ListObject) Inspect() string {
+	parts := make([]string, len(l.Elements))
+	for i, el := range l.Elements {
+		parts[i] = el.Inspect()
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
 
 type MapObject struct {
 	Entries map[string]Object
@@ -426,6 +433,19 @@ func (i *Interpreter) mapToErrorObject(errVal Object) *ErrorObject {
 }
 
 func (i *Interpreter) evalProgram(prog *parser.Program, env *Environment) Object {
+	// Hoist all top-level function definitions so they can be called before declaration
+	for _, stmt := range prog.Statements {
+		if fnDef, ok := stmt.(*parser.FunctionDefinition); ok {
+			fn := &FunctionObject{
+				Name:         fnDef.Name.Value,
+				Params:       extractParamNames(fnDef.Params),
+				Body:         fnDef.Body,
+				DefaultExprs: fnDef.Defaults,
+				Env:          env,
+			}
+			env.Set(fnDef.Name.Value, fn)
+		}
+	}
 	var result Object
 	for _, stmt := range prog.Statements {
 		result = i.Eval(stmt, env)
@@ -1432,6 +1452,13 @@ func (i *Interpreter) evalInfix(op string, left, right Object) Object {
 		return i.evalNumberInfix(op, left.(*NumberObject), right.(*NumberObject))
 	case left.Type() == "string" && right.Type() == "string":
 		return i.evalStringInfix(op, left.(*StringObject), right.(*StringObject))
+	case left.Type() == "list" && right.Type() == "list" && op == "+":
+		ll := left.(*ListObject)
+		rl := right.(*ListObject)
+		combined := make([]Object, 0, len(ll.Elements)+len(rl.Elements))
+		combined = append(combined, ll.Elements...)
+		combined = append(combined, rl.Elements...)
+		return &ListObject{Elements: combined}
 	case op == "==":
 		return nativeBoolToObject(objectsEqual(left, right))
 	case op == "!=":
@@ -1618,6 +1645,59 @@ func (i *Interpreter) evalStringMethod(s *StringObject, method string) Object {
 				return &NumberObject{Value: v}
 			case "to_bool":
 				return nativeBoolToObject(s.Value == "true" || s.Value == "1")
+			case "pad_start":
+				if len(args) < 1 {
+					return s
+				}
+				targetLen := int(0)
+				if n, ok := args[0].(*NumberObject); ok {
+					targetLen = int(n.Value)
+				}
+				pad := " "
+				if len(args) > 1 {
+					if p, ok := args[1].(*StringObject); ok && len(p.Value) > 0 {
+						pad = p.Value
+					}
+				}
+				result := s.Value
+				for len(result) < targetLen {
+					result = pad + result
+				}
+				if len(result) > targetLen {
+					result = result[len(result)-targetLen:]
+				}
+				return &StringObject{Value: result}
+			case "pad_end":
+				if len(args) < 1 {
+					return s
+				}
+				targetLen := int(0)
+				if n, ok := args[0].(*NumberObject); ok {
+					targetLen = int(n.Value)
+				}
+				pad := " "
+				if len(args) > 1 {
+					if p, ok := args[1].(*StringObject); ok && len(p.Value) > 0 {
+						pad = p.Value
+					}
+				}
+				result := s.Value
+				for len(result) < targetLen {
+					result = result + pad
+				}
+				if len(result) > targetLen {
+					result = result[:targetLen]
+				}
+				return &StringObject{Value: result}
+			case "count":
+				if len(args) < 1 {
+					return &NumberObject{Value: 0}
+				}
+				sub, ok := args[0].(*StringObject)
+				if !ok {
+					return &NumberObject{Value: 0}
+				}
+				return &NumberObject{Value: float64(strings.Count(s.Value, sub.Value))}
 			case "match":
 				if len(args) < 1 {
 					return NULL_OBJ
@@ -1818,6 +1898,43 @@ func (i *Interpreter) evalListMethod(l *ListObject, method string) Object {
 					}
 				}
 				return &ListObject{Elements: flattenList(l.Elements, depth)}
+			case "chunk":
+				if len(args) < 1 {
+					return l
+				}
+				size := 1
+				if n, ok := args[0].(*NumberObject); ok && n.Value > 0 {
+					size = int(n.Value)
+				}
+				var chunks []Object
+				for start := 0; start < len(l.Elements); start += size {
+					end := start + size
+					if end > len(l.Elements) {
+						end = len(l.Elements)
+					}
+					chunk := make([]Object, end-start)
+					copy(chunk, l.Elements[start:end])
+					chunks = append(chunks, &ListObject{Elements: chunk})
+				}
+				return &ListObject{Elements: chunks}
+			case "zip":
+				if len(args) < 1 {
+					return l
+				}
+				other, ok := args[0].(*ListObject)
+				if !ok {
+					return l
+				}
+				length := len(l.Elements)
+				if len(other.Elements) < length {
+					length = len(other.Elements)
+				}
+				result := make([]Object, length)
+				for j := 0; j < length; j++ {
+					pair := []Object{l.Elements[j], other.Elements[j]}
+					result[j] = &ListObject{Elements: pair}
+				}
+				return &ListObject{Elements: result}
 			case "unique":
 				var result []Object
 				seen := make(map[string]bool)
@@ -1829,6 +1946,57 @@ func (i *Interpreter) evalListMethod(l *ListObject, method string) Object {
 					}
 				}
 				return &ListObject{Elements: result}
+			case "sum":
+				var total float64
+				for _, el := range l.Elements {
+					if n, ok := el.(*NumberObject); ok { total += n.Value }
+				}
+				return &NumberObject{Value: total}
+			case "min":
+				if len(l.Elements) == 0 { return NULL_OBJ }
+				m := l.Elements[0].(*NumberObject).Value
+				for _, el := range l.Elements[1:] {
+					if n, ok := el.(*NumberObject); ok && n.Value < m { m = n.Value }
+				}
+				return &NumberObject{Value: m}
+			case "max":
+				if len(l.Elements) == 0 { return NULL_OBJ }
+				m := l.Elements[0].(*NumberObject).Value
+				for _, el := range l.Elements[1:] {
+					if n, ok := el.(*NumberObject); ok && n.Value > m { m = n.Value }
+				}
+				return &NumberObject{Value: m}
+			case "avg":
+				if len(l.Elements) == 0 { return NULL_OBJ }
+				var total float64
+				for _, el := range l.Elements {
+					if n, ok := el.(*NumberObject); ok { total += n.Value }
+				}
+				return &NumberObject{Value: total / float64(len(l.Elements))}
+			case "count":
+				return &NumberObject{Value: float64(len(l.Elements))}
+			case "every":
+				if len(args) < 1 { return TRUE_OBJ }
+				for _, el := range l.Elements {
+					if !isTruthy(interp.applyFunction(args[0], []Object{el})) { return FALSE_OBJ }
+				}
+				return TRUE_OBJ
+			case "some":
+				if len(args) < 1 { return FALSE_OBJ }
+				for _, el := range l.Elements {
+					if isTruthy(interp.applyFunction(args[0], []Object{el})) { return TRUE_OBJ }
+				}
+				return FALSE_OBJ
+			case "delete":
+				if len(args) > 0 {
+					if n, ok := args[0].(*NumberObject); ok {
+						idx := int(n.Value)
+						if idx >= 0 && idx < len(l.Elements) {
+							l.Elements = append(l.Elements[:idx], l.Elements[idx+1:]...)
+						}
+					}
+				}
+				return l
 			}
 			return NULL_OBJ
 		},
@@ -1998,6 +2166,48 @@ var builtins = map[string]*BuiltinFunction{
 			return newRuntimeError(codongerror.E1001_SYNTAX_ERROR,
 				"'let' is not a Codong keyword",
 				"assign directly: x = value, or use 'const x = value' for constants")
+		},
+	},
+	"grep": {
+		Name: "grep",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			if len(args) < 2 {
+				return &ListObject{}
+			}
+			list, ok := args[0].(*ListObject)
+			if !ok {
+				return &ListObject{}
+			}
+			pattern := args[1].Inspect()
+			var result []Object
+			for _, el := range list.Elements {
+				if strings.Contains(el.Inspect(), pattern) {
+					result = append(result, el)
+				}
+			}
+			return &ListObject{Elements: result}
+		},
+	},
+	"rand": {
+		Name: "rand",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			// Import math/rand
+			min := float64(0)
+			max := float64(1)
+			if len(args) >= 2 {
+				if n, ok := args[0].(*NumberObject); ok {
+					min = n.Value
+				}
+				if n, ok := args[1].(*NumberObject); ok {
+					max = n.Value
+				}
+			} else if len(args) == 1 {
+				if n, ok := args[0].(*NumberObject); ok {
+					max = n.Value
+				}
+			}
+			result := min + rand.Float64()*(max-min)
+			return &NumberObject{Value: result}
 		},
 	},
 }

@@ -54,8 +54,9 @@ type Parser struct {
 	l      *lexer.Lexer
 	errors []string
 
-	curToken  lexer.Token
-	peekToken lexer.Token
+	curToken      lexer.Token
+	peekToken     lexer.Token
+	lookaheadToken *lexer.Token // used for multi-line chaining lookahead
 
 	prefixParseFns map[lexer.TokenType]prefixParseFn
 	infixParseFns  map[lexer.TokenType]infixParseFn
@@ -81,6 +82,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(lexer.FN, p.parseFunctionLiteral)
 	p.registerPrefix(lexer.CHAN_OP, p.parseChannelReceive)
 	p.registerPrefix(lexer.BLANK, p.parseBlankIdentifier)
+	p.registerPrefix(lexer.MATCH, p.parseMatchExpression)
 
 	p.infixParseFns = make(map[lexer.TokenType]infixParseFn)
 	p.registerInfix(lexer.PLUS, p.parseInfixExpression)
@@ -113,8 +115,12 @@ func (p *Parser) Errors() []string { return p.errors }
 
 func (p *Parser) nextToken() {
 	p.curToken = p.peekToken
-	p.peekToken = p.l.NextToken()
-	// Skip newlines when not significant
+	if p.lookaheadToken != nil {
+		p.peekToken = *p.lookaheadToken
+		p.lookaheadToken = nil
+	} else {
+		p.peekToken = p.l.NextToken()
+	}
 }
 
 func (p *Parser) skipNewlines() {
@@ -386,6 +392,11 @@ func (p *Parser) parseMatchStatement() *MatchStatement {
 	return stmt
 }
 
+// parseMatchExpression allows match to be used as an expression (e.g., return match n {...})
+func (p *Parser) parseMatchExpression() Expression {
+	return p.parseMatchStatement()
+}
+
 func (p *Parser) parseFunctionDefinition() *FunctionDefinition {
 	stmt := &FunctionDefinition{Token: p.curToken}
 	p.nextToken() // skip fn
@@ -626,7 +637,56 @@ func (p *Parser) parseExpression(precedence int) Expression {
 		leftExp = infix(leftExp)
 	}
 
+	// Allow method chaining across newlines: if the next non-newline token is `.`
+	// at a higher precedence than the current context, continue parsing.
+	for p.peekToken.Type == lexer.NEWLINE {
+		lookaheadType := p.peekPastNewlines()
+		if (lookaheadType == lexer.DOT || lookaheadType == lexer.QUESTION) && precedence < precedences[lookaheadType] {
+			// Consume the newlines so curToken becomes DOT/QUESTION
+			for p.peekToken.Type == lexer.NEWLINE {
+				p.nextToken()
+			}
+			infix := p.infixParseFns[p.peekToken.Type]
+			if infix == nil {
+				break
+			}
+			p.nextToken()
+			leftExp = infix(leftExp)
+			// After a newline-chained infix (e.g. DOT), process any immediately
+			// following non-newline infixes (e.g. call parentheses, index access).
+			for p.peekToken.Type != lexer.NEWLINE && p.peekToken.Type != lexer.EOF && precedence < p.peekPrecedence() {
+				inf := p.infixParseFns[p.peekToken.Type]
+				if inf == nil {
+					break
+				}
+				p.nextToken()
+				leftExp = inf(leftExp)
+			}
+		} else {
+			break
+		}
+	}
+
 	return leftExp
+}
+
+// peekPastNewlines returns the type of the first non-newline peek token.
+// It uses the token buffer to look ahead without consuming tokens.
+func (p *Parser) peekPastNewlines() lexer.TokenType {
+	if p.peekToken.Type != lexer.NEWLINE {
+		return p.peekToken.Type
+	}
+	// Need to look further. Use the lookahead buffer.
+	if p.lookaheadToken != nil {
+		return p.lookaheadToken.Type
+	}
+	// Scan ahead from lexer
+	tok := p.l.NextToken()
+	for tok.Type == lexer.NEWLINE {
+		tok = p.l.NextToken()
+	}
+	p.lookaheadToken = &tok
+	return tok.Type
 }
 
 func (p *Parser) parseIdentifier() Expression {

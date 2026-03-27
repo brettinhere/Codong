@@ -204,6 +204,7 @@ type MatchStatement struct {
 }
 
 func (ms *MatchStatement) statementNode()       {}
+func (ms *MatchStatement) expressionNode()      {}
 func (ms *MatchStatement) TokenLiteral() string { return ms.Token.Literal }
 func (ms *MatchStatement) String() string       { return "match { ... }" }
 

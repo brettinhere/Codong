@@ -1012,19 +1012,7 @@ func (i *Interpreter) evalTimeModuleMethod(prop string) Object {
 					t2 = n.Value
 				}
 				ms := t2 - t1
-				if ms < 0 {
-					ms = -ms
-				}
-				return &MapObject{
-					Entries: map[string]Object{
-						"ms":   &NumberObject{Value: ms},
-						"s":    &NumberObject{Value: float64(int64(ms) / 1000)},
-						"m":    &NumberObject{Value: float64(int64(ms) / 60000)},
-						"h":    &NumberObject{Value: float64(int64(ms) / 3600000)},
-						"days": &NumberObject{Value: float64(int64(ms) / 86400000)},
-					},
-					Order: []string{"ms", "s", "m", "h", "days"},
-				}
+				return &NumberObject{Value: ms}
 
 			case "since":
 				if len(args) < 1 {
@@ -1127,6 +1115,29 @@ func (i *Interpreter) evalTimeModuleMethod(prop string) Object {
 				now := time.Now().UTC()
 				end := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999000000, time.UTC)
 				return &NumberObject{Value: float64(end.UnixMilli())}
+
+			case "quarter":
+				if len(args) < 1 {
+					return NULL_OBJ
+				}
+				tsMs := float64(0)
+				if n, ok := args[0].(*NumberObject); ok {
+					tsMs = n.Value
+				}
+				t := time.UnixMilli(int64(tsMs)).UTC()
+				q := (int(t.Month())-1)/3 + 1
+				return &NumberObject{Value: float64(q)}
+
+			case "weekday":
+				if len(args) < 1 {
+					return NULL_OBJ
+				}
+				tsMs := float64(0)
+				if n, ok := args[0].(*NumberObject); ok {
+					tsMs = n.Value
+				}
+				t := time.UnixMilli(int64(tsMs)).UTC()
+				return &NumberObject{Value: float64(t.Weekday())}
 			}
 			return NULL_OBJ
 		},

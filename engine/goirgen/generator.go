@@ -67,8 +67,28 @@ func Generate(program *parser.Program, sourceDirs ...string) string {
 	for _, stmt := range program.Statements {
 		if fd, ok := stmt.(*parser.FunctionDefinition); ok {
 			goName := escapeGoName(fd.Name.Value)
-			g.writef("var %s func(args ...Value) Value", goName)
+			g.writef("var %s func(args ...Value) Value; _ = %s", goName, goName)
 			g.declared[fd.Name.Value] = true
+		}
+	}
+	// Pre-scan all top-level assignments and pre-declare them so function bodies
+	// can close over them (Go closures capture by reference; variable must exist before closure body executes)
+	for _, stmt := range program.Statements {
+		switch s := stmt.(type) {
+		case *parser.FunctionDefinition:
+			// already forward-declared above
+		case *parser.AssignStatement:
+			if !g.declared[s.Name.Value] {
+				gn := escapeGoName(s.Name.Value)
+				g.writef("var %s Value; _ = %s", gn, gn)
+				g.declared[s.Name.Value] = true
+			}
+		case *parser.ConstStatement:
+			if !g.declared[s.Name.Value] {
+				gn := escapeGoName(s.Name.Value)
+				g.writef("var %s Value; _ = %s", gn, gn)
+				g.declared[s.Name.Value] = true
+			}
 		}
 	}
 	// Pass 1: emit import statements first so imported symbols are available
@@ -354,10 +374,11 @@ func (g *Generator) genFuncDef(s *parser.FunctionDefinition) {
 	g.write("}")
 	g.indent--
 	g.write("}()")
-	// Pre-declare all new variables in function body
+	// Pre-declare all new variables in function body (skip outer-scope captures)
 	bodyVars := collectAssignedVars(s.Body)
 	for _, p := range s.Params { delete(bodyVars, p.Name) }
 	for v := range bodyVars {
+		if outerDeclared[v] { continue } // captured from outer scope — not a new local
 		gn := escapeGoName(v)
 		g.writef("var %s Value; _ = %s", gn, gn)
 		g.declared[v] = true
@@ -673,8 +694,55 @@ func (g *Generator) genExpr(expr parser.Expression) string {
 		return g.genStringInterp(e)
 	case *parser.ErrorPropagationExpression:
 		return fmt.Sprintf("cPropagate(%s)", g.genExpr(e.Expr))
+	case *parser.MatchStatement:
+		return g.genMatchExpr(e)
 	}
 	return "nil"
+}
+
+// genMatchExpr generates a match statement used as an expression (e.g. return match n {...}).
+// It wraps the match in an IIFE that returns the matched value.
+func (g *Generator) genMatchExpr(s *parser.MatchStatement) string {
+	var sb strings.Builder
+	sb.WriteString("func() Value {")
+	subj := g.genExpr(s.Subject)
+	sb.WriteString(fmt.Sprintf(" var _ms Value = %s;", subj))
+	for i, mc := range s.Cases {
+		if mc.IsDefault {
+			if i > 0 {
+				sb.WriteString("} else {")
+			} else {
+				sb.WriteString("{")
+			}
+		} else {
+			pattern := g.genExpr(mc.Pattern)
+			if i == 0 {
+				sb.WriteString(fmt.Sprintf(" if cEq(_ms, %s) {", pattern))
+			} else {
+				sb.WriteString(fmt.Sprintf(" } else if cEq(_ms, %s) {", pattern))
+			}
+		}
+		if mc.BodyBlock != nil && len(mc.BodyBlock.Statements) > 0 {
+			// The arm is a block; generate last expression as return value
+			lastStmt := mc.BodyBlock.Statements[len(mc.BodyBlock.Statements)-1]
+			if exprStmt, ok := lastStmt.(*parser.ExpressionStatement); ok {
+				sb.WriteString(fmt.Sprintf(" return %s;", g.genExpr(exprStmt.Expression)))
+			} else if retStmt, ok := lastStmt.(*parser.ReturnStatement); ok && retStmt.Value != nil {
+				sb.WriteString(fmt.Sprintf(" return %s;", g.genExpr(retStmt.Value)))
+			} else {
+				sb.WriteString(fmt.Sprintf(" return nil;"))
+			}
+		} else if mc.Body != nil {
+			sb.WriteString(fmt.Sprintf(" return %s;", g.genExpr(mc.Body)))
+		} else {
+			sb.WriteString(" return nil;")
+		}
+	}
+	if len(s.Cases) > 0 {
+		sb.WriteString("}")
+	}
+	sb.WriteString(" return nil; }()")
+	return sb.String()
 }
 
 var goReserved = map[string]bool{
@@ -857,6 +925,17 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 		}
 	}
 
+	// Two-level module calls: oauth.pkce.*, oauth.rbac.*
+	if subMember, ok := member.Object.(*parser.MemberAccessExpression); ok {
+		if rootIdent, ok := subMember.Object.(*parser.Identifier); ok {
+			subModule := subMember.Property.Value
+			switch rootIdent.Value {
+			case "oauth":
+				return g.genOAuthSubCall(subModule, method, args, named)
+			}
+		}
+	}
+
 	// Server/group object method calls are handled at runtime by cCall
 	// which checks _type on the map. No special-casing needed here.
 
@@ -1003,6 +1082,33 @@ func (g *Generator) genDbCall(method string, args []string, named map[string]par
 		return fmt.Sprintf("cDbUsing(toString(%s))", args[0])
 	case "last_insert_id":
 		return "cDbLastInsertId()"
+	case "sum":
+		if len(args) > 2 {
+			return fmt.Sprintf("cDbAggregate(\"SUM\", toString(%s), toString(%s), %s)", args[0], args[1], args[2])
+		}
+		return fmt.Sprintf("cDbAggregate(\"SUM\", toString(%s), toString(%s), nil)", args[0], args[1])
+	case "avg":
+		if len(args) > 2 {
+			return fmt.Sprintf("cDbAggregate(\"AVG\", toString(%s), toString(%s), %s)", args[0], args[1], args[2])
+		}
+		return fmt.Sprintf("cDbAggregate(\"AVG\", toString(%s), toString(%s), nil)", args[0], args[1])
+	case "min":
+		if len(args) > 2 {
+			return fmt.Sprintf("cDbAggregate(\"MIN\", toString(%s), toString(%s), %s)", args[0], args[1], args[2])
+		}
+		return fmt.Sprintf("cDbAggregate(\"MIN\", toString(%s), toString(%s), nil)", args[0], args[1])
+	case "max":
+		if len(args) > 2 {
+			return fmt.Sprintf("cDbAggregate(\"MAX\", toString(%s), toString(%s), %s)", args[0], args[1], args[2])
+		}
+		return fmt.Sprintf("cDbAggregate(\"MAX\", toString(%s), toString(%s), nil)", args[0], args[1])
+	case "batch_insert":
+		return fmt.Sprintf("cDbInsertBatch(toString(%s), %s)", args[0], args[1])
+	case "pg_copy":
+		if len(args) > 2 {
+			return fmt.Sprintf("cDbPgCopy(toString(%s), %s, %s)", args[0], args[1], args[2])
+		}
+		return "nil"
 	}
 	return "nil"
 }
@@ -1104,6 +1210,35 @@ func (g *Generator) genRedisCall(method string, args []string, named map[string]
 		return fmt.Sprintf("cRedisZincrby(toString(%s), toString(%s), %s)", args[0], args[1], args[2])
 	case "rate_limiter":
 		return fmt.Sprintf("cRedisRateLimiter(%s)", args[0])
+	case "rate_limit":
+		if namedArg != "" {
+			return fmt.Sprintf("cRedisRateLimiter(%s)", namedArg)
+		}
+		return fmt.Sprintf("cRedisRateLimiter(%s)", args[0])
+	case "hset":
+		return fmt.Sprintf("cRedisHSet(toString(%s), toString(%s), toString(%s))", args[0], args[1], args[2])
+	case "hget":
+		return fmt.Sprintf("cRedisHGet(toString(%s), toString(%s))", args[0], args[1])
+	case "hgetall":
+		return fmt.Sprintf("cRedisHGetAll(toString(%s))", args[0])
+	case "hdel":
+		return fmt.Sprintf("cRedisHDel(toString(%s), toString(%s))", args[0], args[1])
+	case "lpush":
+		return fmt.Sprintf("cRedisLPush(toString(%s), toString(%s))", args[0], args[1])
+	case "rpush":
+		return fmt.Sprintf("cRedisRPush(toString(%s), toString(%s))", args[0], args[1])
+	case "lpop":
+		return fmt.Sprintf("cRedisLPop(toString(%s))", args[0])
+	case "rpop":
+		return fmt.Sprintf("cRedisRPop(toString(%s))", args[0])
+	case "lrange":
+		return fmt.Sprintf("cRedisLRange(toString(%s), %s, %s)", args[0], args[1], args[2])
+	case "llen":
+		return fmt.Sprintf("cRedisLLen(toString(%s))", args[0])
+	case "zcount":
+		return fmt.Sprintf("cRedisZCount(toString(%s), %s, %s)", args[0], args[1], args[2])
+	case "zrem":
+		return fmt.Sprintf("cRedisZRem(toString(%s), toString(%s))", args[0], args[1])
 	}
 	return "nil"
 }
@@ -1121,6 +1256,13 @@ func (g *Generator) genImageCall(method string, args []string, named map[string]
 		return fmt.Sprintf("cImageInfo(toString(%s))", args[0])
 	case "read_exif":
 		return fmt.Sprintf("cImageReadExif(toString(%s))", args[0])
+	case "create":
+		if len(args) >= 3 {
+			return fmt.Sprintf("cImageCreate(%s, %s, toString(%s))", args[0], args[1], args[2])
+		}
+		if len(args) >= 2 {
+			return fmt.Sprintf("cImageCreate(%s, %s, \"#ffffff\")", args[0], args[1])
+		}
 	}
 	return "nil"
 }
@@ -1181,6 +1323,40 @@ func (g *Generator) genOAuthCall(method string, args []string, named map[string]
 		return fmt.Sprintf("cOAuthHasPermission(%s, toString(%s))", args[0], args[1])
 	case "check_permission":
 		return fmt.Sprintf("cOAuthHasPermission(%s, toString(%s))", args[0], args[1])
+	}
+	return "nil"
+}
+
+func (g *Generator) genOAuthSubCall(subModule, method string, args []string, named map[string]parser.Expression) string {
+	switch subModule {
+	case "pkce":
+		switch method {
+		case "verifier":
+			return "cOAuthPKCEVerifier()"
+		case "challenge":
+			if len(args) > 0 {
+				return fmt.Sprintf("cOAuthPKCEChallenge(toString(%s))", args[0])
+			}
+			return "nil"
+		}
+	case "rbac":
+		switch method {
+		case "define":
+			if len(args) > 0 {
+				return fmt.Sprintf("cOAuthRBACDefine(%s)", args[0])
+			}
+			return "nil"
+		case "assign":
+			if len(args) >= 2 {
+				return fmt.Sprintf("cOAuthRBACAssign(toString(%s), toString(%s))", args[0], args[1])
+			}
+			return "nil"
+		case "check":
+			if len(args) >= 2 {
+				return fmt.Sprintf("cOAuthRBACCheck(toString(%s), toString(%s))", args[0], args[1])
+			}
+			return "nil"
+		}
 	}
 	return "nil"
 }
@@ -1388,7 +1564,7 @@ func (g *Generator) genJsonCall(method string, args []string, named map[string]p
 		return fmt.Sprintf("cJsonGet(%s)", allArgs)
 	case "set":
 		return fmt.Sprintf("cJsonSet(%s)", allArgs)
-	case "flatten":
+	case "flatten", "flat":
 		return fmt.Sprintf("cJsonFlatten(%s)", allArgs)
 	case "unflatten":
 		return fmt.Sprintf("cJsonUnflatten(%s)", allArgs)

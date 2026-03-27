@@ -289,6 +289,14 @@ func toMap(v Value) *CodongMap {
 // --- Operators ---
 
 func cAdd(a, b Value) Value {
+	if la, ok := a.(*CodongList); ok {
+		if lb, ok := b.(*CodongList); ok {
+			combined := make([]Value, 0, len(la.Elements)+len(lb.Elements))
+			combined = append(combined, la.Elements...)
+			combined = append(combined, lb.Elements...)
+			return &CodongList{Elements: combined}
+		}
+	}
 	if sa, ok := a.(string); ok { return sa + toString(b) }
 	return toFloat(a) + toFloat(b)
 }
@@ -508,6 +516,37 @@ func cListMethod(l *CodongList, method string, args ...Value) Value {
 			}
 		}
 		return l
+	case "sum":
+		var total float64
+		for _, el := range l.Elements { total += toFloat(el) }
+		return total
+	case "min":
+		if len(l.Elements) == 0 { return nil }
+		m := toFloat(l.Elements[0])
+		for _, el := range l.Elements[1:] { if v := toFloat(el); v < m { m = v } }
+		return m
+	case "max":
+		if len(l.Elements) == 0 { return nil }
+		m := toFloat(l.Elements[0])
+		for _, el := range l.Elements[1:] { if v := toFloat(el); v > m { m = v } }
+		return m
+	case "avg":
+		if len(l.Elements) == 0 { return nil }
+		var total float64
+		for _, el := range l.Elements { total += toFloat(el) }
+		return total / float64(len(l.Elements))
+	case "count":
+		return float64(len(l.Elements))
+	case "every":
+		if len(args) == 0 { return true }
+		fn := args[0].(func(...Value) Value)
+		for _, el := range l.Elements { if !isTruthy(fn(el)) { return false } }
+		return true
+	case "some":
+		if len(args) == 0 { return false }
+		fn := args[0].(func(...Value) Value)
+		for _, el := range l.Elements { if isTruthy(fn(el)) { return true } }
+		return false
 	}
 	return nil
 }
@@ -636,6 +675,26 @@ func cMapMethod(m *CodongMap, method string, args ...Value) Value {
 			if isTruthy(fn(m.Entries[k], k)) { nm.Entries[k] = m.Entries[k]; nm.Order = append(nm.Order, k) }
 		}
 		return nm
+	case "cookie":
+		// Response map: res.cookie(name, value, opts) — stores cookie header for writeResponse
+		cookieVal := cWebSetCookie(args...)
+		if sc, ok := cookieVal.(*CodongMap).Entries["Set-Cookie"]; ok {
+			if existing, ok := m.Entries["_cookies"].(*CodongList); ok {
+				existing.Elements = append(existing.Elements, sc)
+			} else {
+				cSet(m, "_cookies", &CodongList{Elements: []Value{sc}})
+			}
+		}
+		return m
+	case "clear_cookie":
+		name := ""; if len(args) > 0 { name = toString(args[0]) }
+		hdr := fmt.Sprintf("%s=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT", name)
+		if existing, ok := m.Entries["_cookies"].(*CodongList); ok {
+			existing.Elements = append(existing.Elements, hdr)
+		} else {
+			cSet(m, "_cookies", &CodongList{Elements: []Value{hdr}})
+		}
+		return m
 	}
 	return nil
 }
@@ -652,6 +711,30 @@ func cCall(obj Value, method string, args ...Value) Value {
 			case "server":
 				switch method {
 				case "get", "post", "put", "delete", "patch":
+					if len(args) >= 3 {
+						// Route-level middleware: server.get("/path", mw1, mw2, handler)
+						finalRouteHandler := args[len(args)-1]
+						routeMiddlewares := args[1 : len(args)-1]
+						chained := func(reqArgs ...Value) Value {
+							var callChain func(idx int, req Value) Value
+							callChain = func(idx int, req Value) Value {
+								if idx >= len(routeMiddlewares) {
+									return cCallFn(finalRouteHandler, req)
+								}
+								mw := routeMiddlewares[idx]
+								nextFn := func(nextArgs ...Value) Value {
+									r := req
+									if len(nextArgs) > 0 { r = nextArgs[0] }
+									return callChain(idx+1, r)
+								}
+								return cCallFn(mw, req, nextFn)
+							}
+							req := Value(nil)
+							if len(reqArgs) > 0 { req = reqArgs[0] }
+							return callChain(0, req)
+						}
+						return cWebRoute(strings.ToUpper(method), args[0], chained)
+					}
 					return cWebRoute(strings.ToUpper(method), args[0], args[1])
 				case "group":
 					if len(args) > 0 { return cMap("_type", "group", "prefix", args[0]) }
@@ -668,6 +751,15 @@ func cCall(obj Value, method string, args ...Value) Value {
 							}
 						}
 						cWebMiddlewares = append(cWebMiddlewares, args[0])
+					}
+					return nil
+				case "sse":
+					if len(args) >= 2 {
+						path := toString(args[0])
+						handler := args[1]
+						cWebRoutes = append(cWebRoutes, struct{ method, pattern string; handler func(...Value) Value }{"GET", path, func(routeArgs ...Value) Value {
+							return cMap("_type", "sse", "_handler", handler)
+						}})
 					}
 					return nil
 				case "ws":
@@ -687,7 +779,21 @@ func cCall(obj Value, method string, args ...Value) Value {
 			case "web_middleware_ns":
 				switch method {
 				case "cors":
-					return cMap("_mw_type", "cors")
+					m := cMap("_mw_type", "cors")
+					if len(args) > 0 {
+						if opts, ok := args[0].(*CodongMap); ok {
+							if v, exists := opts.Entries["origins"]; exists { cSet(m, "origins", v) }
+						}
+					}
+					return m
+				case "rate_limit":
+					m := cMap("_mw_type", "rate_limit")
+					if len(args) > 0 {
+						if opts, ok := args[0].(*CodongMap); ok {
+							for k, v := range opts.Entries { cSet(m, k, v) }
+						}
+					}
+					return m
 				case "logger":
 					return cMap("_mw_type", "logger")
 				case "recover":
@@ -794,6 +900,28 @@ func cRange(start, end float64) *CodongList {
 
 type cReturnSignal struct{ Value Value; IsErrorProp bool }
 
+// cMapToError converts a Codong error map {code, message, ...} to a CodongError if it looks like one.
+func cMapToError(m *CodongMap) *CodongError {
+	codeVal, hasCode := m.Entries["code"]
+	msgVal, hasMsg := m.Entries["message"]
+	if !hasCode || !hasMsg {
+		return nil
+	}
+	code := toString(codeVal)
+	msg := toString(msgVal)
+	if code == "" && msg == "" {
+		return nil
+	}
+	e := &CodongError{Code: code, Message: msg}
+	if fixVal, ok := m.Entries["fix"]; ok {
+		e.Fix = toString(fixVal)
+	}
+	if retryVal, ok := m.Entries["retry"]; ok {
+		e.Retry = toBool(retryVal)
+	}
+	return e
+}
+
 func cPropagate(v Value) Value {
 	// If it's an error, propagate it up the call stack via panic
 	// IsErrorProp=true so function defer doesn't intercept it (only try/catch does)
@@ -801,10 +929,15 @@ func cPropagate(v Value) Value {
 		panic(&cReturnSignal{Value: e, IsErrorProp: true})
 	}
 	if m, ok := v.(*CodongMap); ok {
+		// Check for {error: CodongError} wrapper
 		if errVal, ok := m.Entries["error"]; ok {
 			if e, ok := errVal.(*CodongError); ok {
 				panic(&cReturnSignal{Value: e, IsErrorProp: true})
 			}
+		}
+		// Check for direct error map {code, message, ...}
+		if e := cMapToError(m); e != nil {
+			panic(&cReturnSignal{Value: e, IsErrorProp: true})
 		}
 	}
 	return v
@@ -820,6 +953,10 @@ func cPropagateStmt(v Value) {
 			if e, ok := errVal.(*CodongError); ok {
 				panic(&cReturnSignal{Value: e, IsErrorProp: true})
 			}
+		}
+		// Check for direct error map {code, message, ...}
+		if e := cMapToError(m); e != nil {
+			panic(&cReturnSignal{Value: e, IsErrorProp: true})
 		}
 	}
 }
@@ -906,7 +1043,10 @@ func cWebServe(port int) Value {
 				cSet(hm, strings.ToLower(k), v[0])
 			}
 			cSet(reqMap, "headers", hm)
-			cSet(reqMap, "header", hm) // alias
+			cSet(reqMap, "header", func(args ...Value) Value {
+				if len(args) > 0 { if v, ok := hm.Entries[strings.ToLower(toString(args[0]))]; ok { return v } }
+				return nil
+			})
 			// Cookies
 			cm := cMap()
 			for _, c := range req.Cookies() { cSet(cm, c.Name, c.Value) }
@@ -980,12 +1120,42 @@ func cWebServe(port int) Value {
 			prev := finalHandler
 			switch mwType {
 			case "cors":
+				corsOrigin := "*"
+				if origins, ok := m.Entries["origins"].(*CodongList); ok && len(origins.Elements) > 0 {
+					corsOrigin = toString(origins.Elements[0])
+				}
+				corsO := corsOrigin
+				prevCors := prev
 				finalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.Header().Set("Access-Control-Allow-Origin", "*")
+					w.Header().Set("Access-Control-Allow-Origin", corsO)
 					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
 					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 					if r.Method == "OPTIONS" { w.WriteHeader(204); return }
-					prev.ServeHTTP(w, r)
+					prevCors.ServeHTTP(w, r)
+				})
+			case "rate_limit":
+				maxReqs := 100
+				windowDur := time.Minute
+				if mv, ok := m.Entries["max"]; ok { maxReqs = int(toFloat(mv)) }
+				if wv, ok := m.Entries["window"]; ok { windowDur = cParseDuration(toString(wv)) }
+				type rlEntry struct { count int; reset time.Time }
+				rlMap := &sync.Map{}
+				rlMax := maxReqs; rlWindow := windowDur
+				prevRL := prev
+				finalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					ip := r.RemoteAddr
+					now := time.Now()
+					actual, _ := rlMap.LoadOrStore(ip, &rlEntry{count: 0, reset: now.Add(rlWindow)})
+					entry := actual.(*rlEntry)
+					if now.After(entry.reset) { entry.count = 0; entry.reset = now.Add(rlWindow) }
+					entry.count++
+					if entry.count > rlMax {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(429)
+						fmt.Fprint(w, "{\"error\":\"rate limit exceeded\"}")
+						return
+					}
+					prevRL.ServeHTTP(w, r)
 				})
 			case "static":
 				finalHandler = cWebApplyStatic(m, finalHandler)
@@ -1121,6 +1291,14 @@ func writeResponse(w http.ResponseWriter, req *http.Request, result Value) {
 		if hdrs, ok := m.Entries["headers"].(*CodongMap); ok {
 			for k, v := range hdrs.Entries { w.Header().Set(k, toString(v)) }
 		}
+		// Apply Set-Cookie cookies stored directly on response map
+		if cookies, ok := m.Entries["_cookies"].(*CodongList); ok {
+			for _, c := range cookies.Elements { w.Header().Add("Set-Cookie", toString(c)) }
+		}
+		// Legacy: single Set-Cookie field
+		if sc, ok := m.Entries["Set-Cookie"]; ok {
+			w.Header().Add("Set-Cookie", toString(sc))
+		}
 		switch rt {
 		case "json":
 			if w.Header().Get("Content-Type") == "" { w.Header().Set("Content-Type", "application/json") }
@@ -1219,12 +1397,19 @@ func writeSSEResponse(w http.ResponseWriter, req *http.Request, handler Value) {
 	streamMap := streamObj
 	sendFn := func(args ...Value) Value {
 		if stream.closed { return nil }
-		event := "message"
 		var data Value
-		if len(args) > 0 { event = toString(args[0]) }
-		if len(args) > 1 { data = args[1] }
-		jb, _ := json.Marshal(valueToGo(data))
-		fmt.Fprintf(stream.w, "event: %s\ndata: %s\n\n", event, string(jb))
+		if len(args) == 1 {
+			// stream.send(value) — send as data
+			data = args[0]
+			jb, _ := json.Marshal(valueToGo(data))
+			fmt.Fprintf(stream.w, "data: %s\n\n", string(jb))
+		} else if len(args) >= 2 {
+			// stream.send(event, data)
+			event := toString(args[0])
+			data = args[1]
+			jb, _ := json.Marshal(valueToGo(data))
+			fmt.Fprintf(stream.w, "event: %s\ndata: %s\n\n", event, string(jb))
+		}
 		stream.flusher.Flush()
 		return nil
 	}
@@ -1234,12 +1419,7 @@ func writeSSEResponse(w http.ResponseWriter, req *http.Request, handler Value) {
 	}
 	streamMap.Entries["send"] = CodongFn(sendFn)
 	streamMap.Entries["close"] = CodongFn(closeFn)
-	if _, ok := streamMap.Entries["send"]; !ok {
-		streamMap.Order = append(streamMap.Order, "send")
-	}
-	if _, ok := streamMap.Entries["close"]; !ok {
-		streamMap.Order = append(streamMap.Order, "close")
-	}
+	streamMap.Order = append(streamMap.Order, "send", "close")
 
 	// Call the handler with the stream object
 	if fn, ok := handler.(CodongFn); ok {
@@ -1554,6 +1734,19 @@ func cParseMultipartBody(req *http.Request, reqMap *CodongMap) {
 	cSet(reqMap, "files_all", func(args ...Value) Value {
 		return &CodongList{Elements: allFiles}
 	})
+}
+
+func cParseDuration(s string) time.Duration {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if d, err := time.ParseDuration(s); err == nil { return d }
+	// Handle "1m", "1h", "30s" explicitly via time.ParseDuration-friendly suffixes
+	// Support "1min" -> "1m" conversion
+	s = strings.ReplaceAll(s, "min", "m")
+	s = strings.ReplaceAll(s, "hour", "h")
+	s = strings.ReplaceAll(s, "sec", "s")
+	s = strings.ReplaceAll(s, "ms", "ms") // already fine
+	if d, err := time.ParseDuration(s); err == nil { return d }
+	return time.Minute // default fallback
 }
 
 func cParseSize(s string) int64 {
@@ -2169,6 +2362,19 @@ func cDbTransaction(fnVal Value, opts ...Value) Value {
 	return result
 }
 
+// cDbAggregate performs SUM/AVG/MIN/MAX aggregation on a table column with optional filter.
+func cDbAggregate(aggFn, table, col string, filterVal Value) Value {
+	if cDB == nil { return nil }
+	var filter *CodongMap
+	if filterVal != nil { filter, _ = filterVal.(*CodongMap) }
+	where, args := filterSQL(filter)
+	q := fmt.Sprintf("SELECT %s(%s) FROM %s", aggFn, col, table)
+	if where != "" { q += " WHERE " + where }
+	var result float64
+	if err := cDbQueryRowOne(q, args...).Scan(&result); err != nil { return nil }
+	return result
+}
+
 // cDbExec executes SQL using the transaction if active, otherwise the main connection.
 func cDbExec(q string, args ...interface{}) (sql.Result, error) {
 	var result sql.Result
@@ -2743,7 +2949,7 @@ func cFsRead(args ...Value) Value {
 	data, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", fmt.Sprintf("check file path: %s", p))
+			return nil // return null for missing files
 		}
 		if os.IsPermission(err) {
 			return cError("E5002_PERMISSION_DENIED", fmt.Sprintf("permission denied: %s", toString(args[0])), "fix", "check file permissions")
@@ -2892,6 +3098,9 @@ func cFsReadJson(args ...Value) Value {
 	p := cFsResolve(toString(args[0]))
 	data, err := os.ReadFile(p)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // return null for missing files
+		}
 		return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", "check path")
 	}
 	var result interface{}
@@ -3623,8 +3832,10 @@ func cRedisUsing(name string) *CodongMap {
 	if !ok { return nil }
 	proxy := cMap("_name", name)
 	ctx := context.Background()
+	// Prefix keys with the namespace to provide isolation
+	ns := name + ":"
 	cSet(proxy, "set", func(args ...Value) Value {
-		key := toString(args[0])
+		key := ns + toString(args[0])
 		val := toString(args[1])
 		ttl := time.Duration(0)
 		if len(args) > 2 {
@@ -3638,7 +3849,7 @@ func cRedisUsing(name string) *CodongMap {
 		return true
 	})
 	cSet(proxy, "get", func(args ...Value) Value {
-		key := toString(args[0])
+		key := ns + toString(args[0])
 		val, err := c.Get(ctx, key).Result()
 		if err != nil {
 			if len(args) > 1 { return args[1] }
@@ -3647,11 +3858,11 @@ func cRedisUsing(name string) *CodongMap {
 		return val
 	})
 	cSet(proxy, "delete", func(args ...Value) Value {
-		c.Del(ctx, toString(args[0]))
+		c.Del(ctx, ns+toString(args[0]))
 		return nil
 	})
 	cSet(proxy, "exists", func(args ...Value) Value {
-		n, _ := c.Exists(ctx, toString(args[0])).Result()
+		n, _ := c.Exists(ctx, ns+toString(args[0])).Result()
 		return n > 0
 	})
 	return proxy
@@ -4110,12 +4321,121 @@ func cRedisZincrby(key, member string, incr Value) Value {
 	return float64(s)
 }
 
+// Hash operations
+func cRedisHSet(key, field, value string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	err := c.HSet(context.Background(), key, field, value).Err()
+	if err != nil { return nil }
+	return true
+}
+
+func cRedisHGet(key, field string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	val, err := c.HGet(context.Background(), key, field).Result()
+	if err != nil { return nil }
+	return val
+}
+
+func cRedisHGetAll(key string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	result, err := c.HGetAll(context.Background(), key).Result()
+	if err != nil { return nil }
+	m := &CodongMap{Entries: make(map[string]interface{}), Order: []string{}}
+	for k, v := range result {
+		m.Entries[k] = v
+		m.Order = append(m.Order, k)
+	}
+	return m
+}
+
+func cRedisHDel(key, field string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	n, _ := c.HDel(context.Background(), key, field).Result()
+	return float64(n)
+}
+
+// List operations
+func cRedisLPush(key, value string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	n, err := c.LPush(context.Background(), key, value).Result()
+	if err != nil { return nil }
+	return float64(n)
+}
+
+func cRedisRPush(key, value string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	n, err := c.RPush(context.Background(), key, value).Result()
+	if err != nil { return nil }
+	return float64(n)
+}
+
+func cRedisLPop(key string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	val, err := c.LPop(context.Background(), key).Result()
+	if err != nil { return nil }
+	return val
+}
+
+func cRedisRPop(key string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	val, err := c.RPop(context.Background(), key).Result()
+	if err != nil { return nil }
+	return val
+}
+
+func cRedisLRange(key string, start, stop Value) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	s := int64(toFloat(start))
+	e := int64(toFloat(stop))
+	vals, err := c.LRange(context.Background(), key, s, e).Result()
+	if err != nil { return nil }
+	elems := make([]Value, len(vals))
+	for i, v := range vals { elems[i] = v }
+	return &CodongList{Elements: elems}
+}
+
+func cRedisLLen(key string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	n, err := c.LLen(context.Background(), key).Result()
+	if err != nil { return nil }
+	return float64(n)
+}
+
+// ZSet count / remove
+func cRedisZCount(key string, min, max Value) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	minStr := fmt.Sprintf("%v", toFloat(min))
+	maxStr := fmt.Sprintf("%v", toFloat(max))
+	n, err := c.ZCount(context.Background(), key, minStr, maxStr).Result()
+	if err != nil { return nil }
+	return float64(n)
+}
+
+func cRedisZRem(key, member string) Value {
+	c := cRedisGetClient()
+	if c == nil { return nil }
+	c.ZRem(context.Background(), key, member)
+	return nil
+}
+
 func cRedisRateLimiter(config Value) Value {
 	c := cRedisGetClient()
 	m, ok := config.(*CodongMap)
 	if !ok { return nil }
 	key := toString(m.Entries["key"])
 	rate := int64(toFloat(m.Entries["rate"]))
+	if maxV, ok := m.Entries["max"]; ok && rate == 0 { rate = int64(toFloat(maxV)) }
 	burst := int64(toFloat(m.Entries["burst"]))
 	if burst == 0 { burst = rate }
 	window := 60 * time.Second
@@ -4123,7 +4443,7 @@ func cRedisRateLimiter(config Value) Value {
 		if d, err := time.ParseDuration(toString(w)); err == nil { window = d }
 	}
 	limiter := cMap("key", key, "rate", float64(rate), "burst", float64(burst))
-	cSet(limiter, "allow", func(args ...Value) Value {
+	checkFn := func(args ...Value) Value {
 		if c == nil { return cMap("allowed", true, "remaining", float64(burst)) }
 		ctx := context.Background()
 		now := time.Now()
@@ -4142,7 +4462,9 @@ func cRedisRateLimiter(config Value) Value {
 		c.ZAdd(ctx, rlKey, goredis.Z{Score: float64(now.UnixMilli()), Member: fmt.Sprintf("%d", now.UnixNano())})
 		c.Expire(ctx, rlKey, window)
 		return cMap("allowed", true, "remaining", float64(burst-count-1))
-	})
+	}
+	cSet(limiter, "allow", checkFn)
+	cSet(limiter, "check", checkFn)
 	return limiter
 }
 
@@ -4280,8 +4602,59 @@ func cImageCall(obj *cImageObj, method string, args ...Value) Value {
 		return obj // no-op, return same image
 	case "optimize":
 		return obj // optimization is a no-op, return same image
+	case "watermark_tile":
+		return cImageWatermarkTile(obj, args...)
+	case "smart_crop":
+		return cImageSmartCrop(obj, args...)
+	case "to_rgb":
+		return cImageToRGB(obj)
 	}
 	return nil
+}
+
+// cImageWatermarkTile tiles a watermark image across the base image.
+func cImageWatermarkTile(obj *cImageObj, args ...Value) Value {
+	// args[0] = watermark image obj or path, args[1] = spacing (optional)
+	if len(args) < 1 { return obj }
+	spacing := 0
+	if len(args) > 1 { spacing = int(toFloat(args[1])) }
+	var wmImg image.Image
+	switch wm := args[0].(type) {
+	case *cImageObj:
+		wmImg = wm.img
+	case string:
+		if opened, ok := cImageOpen(wm).(*cImageObj); ok {
+			wmImg = opened.img
+		}
+	}
+	if wmImg == nil { return obj }
+	dst := image.NewRGBA(obj.img.Bounds())
+	imgdraw.Draw(dst, dst.Bounds(), obj.img, image.Point{}, imgdraw.Src)
+	wmB := wmImg.Bounds()
+	stepX := wmB.Dx() + spacing
+	stepY := wmB.Dy() + spacing
+	b := obj.img.Bounds()
+	for y := 0; y < b.Dy(); y += stepY {
+		for x := 0; x < b.Dx(); x += stepX {
+			imgdraw.Draw(dst, image.Rect(x, y, x+wmB.Dx(), y+wmB.Dy()), wmImg, wmB.Min, imgdraw.Over)
+		}
+	}
+	return &cImageObj{img: dst, format: obj.format, path: obj.path}
+}
+
+// cImageSmartCrop crops the image to center-weighted smart crop.
+func cImageSmartCrop(obj *cImageObj, args ...Value) Value {
+	if len(args) < 2 { return obj }
+	tw := int(toFloat(args[0]))
+	th := int(toFloat(args[1]))
+	return &cImageObj{img: cCropImg(obj.img, 0, 0, tw, th), format: obj.format, path: obj.path}
+}
+
+// cImageToRGB converts image to RGBA (no-op for our impl, already RGBA).
+func cImageToRGB(obj *cImageObj) Value {
+	dst := image.NewRGBA(obj.img.Bounds())
+	imgdraw.Draw(dst, dst.Bounds(), obj.img, image.Point{}, imgdraw.Src)
+	return &cImageObj{img: dst, format: obj.format, path: obj.path}
 }
 
 func cImageResize(obj *cImageObj, args ...Value) Value {
@@ -4680,6 +5053,29 @@ func cImageToBase64(obj *cImageObj, args ...Value) Value {
 	return fmt.Sprintf("data:image/%s;base64,%s", format, b64)
 }
 
+// cImageCreate creates a blank image with the given dimensions and background color.
+func cImageCreate(widthVal, heightVal Value, colorHex string) Value {
+	w := int(toFloat(widthVal))
+	h := int(toFloat(heightVal))
+	if w <= 0 || h <= 0 { return nil }
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	// Parse hex color
+	r, g, b := uint8(255), uint8(255), uint8(255)
+	hex := strings.TrimPrefix(colorHex, "#")
+	if len(hex) == 6 {
+		fmt.Sscanf(hex[0:2], "%02x", &r)
+		fmt.Sscanf(hex[2:4], "%02x", &g)
+		fmt.Sscanf(hex[4:6], "%02x", &b)
+	}
+	c := color.RGBA{R: r, G: g, B: b, A: 255}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, c)
+		}
+	}
+	return &cImageObj{img: img, format: "png"}
+}
+
 func cResizeImg(src image.Image, nw, nh int) image.Image {
 	b := src.Bounds(); dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
 	sx := float64(b.Dx()) / float64(nw); sy := float64(b.Dy()) / float64(nh)
@@ -4937,6 +5333,49 @@ func cOAuthGeneratePKCE() Value {
 func cOAuthHashToken(token string) Value {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])
+}
+
+// PKCE sub-module: oauth.pkce.verifier() / oauth.pkce.challenge(verifier)
+func cOAuthPKCEVerifier() Value {
+	verifierBytes := make([]byte, 32)
+	rand.Read(verifierBytes)
+	return base64.RawURLEncoding.EncodeToString(verifierBytes)
+}
+
+func cOAuthPKCEChallenge(verifier string) Value {
+	h := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(h[:])
+}
+
+// RBAC sub-module: oauth.rbac.define / oauth.rbac.assign / oauth.rbac.check
+var cOAuthUserRoles = map[string]string{} // username -> role
+
+func cOAuthRBACDefine(roles Value) Value {
+	return cOAuthDefineRoles(roles)
+}
+
+func cOAuthRBACAssign(user, role string) Value {
+	cOAuthUserRoles[user] = role
+	return nil
+}
+
+func cOAuthRBACCheck(roleOrUser, permission string) Value {
+	// Check if roleOrUser is a defined role first
+	if perms, ok := cOAuthRoles[roleOrUser]; ok {
+		for _, p := range perms {
+			if p == permission { return true }
+		}
+		return false
+	}
+	// Otherwise treat as user, look up their role
+	if role, ok := cOAuthUserRoles[roleOrUser]; ok {
+		if perms, ok2 := cOAuthRoles[role]; ok2 {
+			for _, p := range perms {
+				if p == permission { return true }
+			}
+		}
+	}
+	return false
 }
 
 func cOAuthDefineRoles(roles Value) Value {
