@@ -63,7 +63,7 @@ func Generate(program *parser.Program, sourceDirs ...string) string {
 	g.write("}")
 	g.indent--
 	g.write("}()")
-	// Forward-declare all top-level functions (enables mutual recursion)
+	// Forward-declare all top-level functions (enables mutual recursion + hoisting)
 	for _, stmt := range program.Statements {
 		if fd, ok := stmt.(*parser.FunctionDefinition); ok {
 			goName := escapeGoName(fd.Name.Value)
@@ -71,8 +71,26 @@ func Generate(program *parser.Program, sourceDirs ...string) string {
 			g.declared[fd.Name.Value] = true
 		}
 	}
+	// Pass 1: emit import statements first so imported symbols are available
 	for _, stmt := range program.Statements {
-		g.genStatement(stmt)
+		if _, ok := stmt.(*parser.ImportStatement); ok {
+			g.genStatement(stmt)
+		}
+	}
+	// Pass 2: hoist all function definitions so they can be called in any order
+	for _, stmt := range program.Statements {
+		if _, ok := stmt.(*parser.FunctionDefinition); ok {
+			g.genStatement(stmt)
+		}
+	}
+	// Pass 3: emit all remaining statements (non-import, non-fn)
+	for _, stmt := range program.Statements {
+		switch stmt.(type) {
+		case *parser.ImportStatement, *parser.FunctionDefinition:
+			// already emitted
+		default:
+			g.genStatement(stmt)
+		}
 	}
 	// Start web servers after all routes are registered
 	g.write("cWebServeAll()")
