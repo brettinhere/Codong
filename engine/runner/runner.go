@@ -2,18 +2,42 @@ package runner
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/codong-lang/codong/engine/goirgen"
 	"github.com/codong-lang/codong/engine/lexer"
 	"github.com/codong-lang/codong/engine/parser"
 )
 
+// cacheDir returns ~/.codong/cache
+func cacheDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.TempDir()
+	}
+	return filepath.Join(home, ".codong", "cache")
+}
+
+// cachedBinary returns the path to the cached binary for a given Go source hash.
+// Returns ("", false) if not cached.
+func cachedBinary(goSource string) (string, bool) {
+	h := sha256.Sum256([]byte(goSource))
+	key := fmt.Sprintf("%x", h)
+	bin := filepath.Join(cacheDir(), key, "main")
+	if info, err := os.Stat(bin); err == nil && !info.IsDir() {
+		return bin, true
+	}
+	return filepath.Join(cacheDir(), key, "main"), false
+}
+
 // Run compiles and runs a .cod file via Go IR.
+// If the file has been compiled before (same content), the cached binary is reused.
 func Run(codFile string) error {
 	source, err := os.ReadFile(codFile)
 	if err != nil {
@@ -34,7 +58,27 @@ func Run(codFile string) error {
 		return fmt.Errorf("parse errors")
 	}
 
-	return runGoSource(goSource)
+	// Check compilation cache
+	binPath, cached := cachedBinary(goSource)
+	if cached {
+		return execBinary(binPath)
+	}
+
+	// Cache miss: compile to persistent binary
+	if err := os.MkdirAll(filepath.Dir(binPath), 0755); err != nil {
+		// Fall back to go run if cache dir can't be created
+		return runGoSource(goSource)
+	}
+	if err := buildGoSourceTo(goSource, binPath); err != nil {
+		return err
+	}
+	return execBinary(binPath)
+}
+
+// execBinary runs a pre-compiled binary with stdin/stdout/stderr forwarded.
+func execBinary(binPath string) error {
+	// Use syscall.Exec to replace process (zero overhead)
+	return syscall.Exec(binPath, []string{binPath}, os.Environ())
 }
 
 // Build compiles a .cod file to a standalone binary.
@@ -83,6 +127,17 @@ func runGoSource(goSource string) error {
 	defer os.RemoveAll(dir)
 
 	return execInDir(dir, goSource, "run")
+}
+
+// buildGoSourceTo compiles Go source to a specific output binary path (used by cache).
+func buildGoSourceTo(goSource, outputPath string) error {
+	dir, err := os.MkdirTemp("", "codong-build-*")
+	if err != nil {
+		return fmt.Errorf("cannot create temp dir: %w", err)
+	}
+	defer os.RemoveAll(dir)
+
+	return execInDir(dir, goSource, "cache", outputPath)
 }
 
 func buildGoSource(goSource, outputPath string) error {
@@ -190,11 +245,21 @@ require (
 	cmd := exec.Command("go", "build", "-o", outputPath, "main.go")
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var buildStderr bytes.Buffer
+	cmd.Stderr = &buildStderr
 	if err := cmd.Run(); err != nil {
+		// Translate Go build errors to Codong errors
+		stderr := buildStderr.String()
+		if strings.Contains(stderr, "# command-line-arguments") || strings.Contains(stderr, "main.go:") {
+			codongErr := translateGoError(stderr)
+			fmt.Print(codongErr)
+			os.Exit(1)
+		}
 		return fmt.Errorf("go build failed: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Built: %s\n", outputPath)
+	if mode == "build" {
+		fmt.Fprintf(os.Stderr, "Built: %s\n", outputPath)
+	}
 	return nil
 }
 
