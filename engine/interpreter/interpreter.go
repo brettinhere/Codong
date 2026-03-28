@@ -1482,6 +1482,8 @@ func (i *Interpreter) evalNumberInfix(op string, left, right *NumberObject) Obje
 		return &NumberObject{Value: left.Value - right.Value}
 	case "*":
 		return &NumberObject{Value: left.Value * right.Value}
+	case "**":
+		return &NumberObject{Value: math.Pow(left.Value, right.Value)}
 	case "/":
 		if right.Value == 0 {
 			return &ErrorObject{IsRuntime: true, Error: codongerror.New(codongerror.E9003_PANIC, "division by zero")}
@@ -1717,6 +1719,32 @@ func (i *Interpreter) evalStringMethod(s *StringObject, method string) Object {
 					elements = append(elements, &StringObject{Value: m})
 				}
 				return &ListObject{Elements: elements}
+			case "index":
+				if len(args) < 1 {
+					return &NumberObject{Value: -1}
+				}
+				sub, ok := args[0].(*StringObject)
+				if !ok {
+					return &NumberObject{Value: -1}
+				}
+				return &NumberObject{Value: float64(strings.Index(s.Value, sub.Value))}
+			case "reverse":
+				runes := []rune(s.Value)
+				for left, right := 0, len(runes)-1; left < right; left, right = left+1, right-1 {
+					runes[left], runes[right] = runes[right], runes[left]
+				}
+				return &StringObject{Value: string(runes)}
+			case "format":
+				result := s.Value
+				for j, arg := range args {
+					placeholder := fmt.Sprintf("{%d}", j)
+					result = strings.ReplaceAll(result, placeholder, arg.Inspect())
+				}
+				// Also replace {} with positional args in order
+				for _, arg := range args {
+					result = strings.Replace(result, "{}", arg.Inspect(), 1)
+				}
+				return &StringObject{Value: result}
 			}
 			return NULL_OBJ
 		},
@@ -1891,7 +1919,7 @@ func (i *Interpreter) evalListMethod(l *ListObject, method string) Object {
 				}
 				return &NumberObject{Value: -1}
 			case "flat":
-				depth := 1
+				depth := 1<<31 - 1 // deep flatten by default
 				if len(args) > 0 {
 					if n, ok := args[0].(*NumberObject); ok {
 						depth = int(n.Value)
@@ -1974,6 +2002,16 @@ func (i *Interpreter) evalListMethod(l *ListObject, method string) Object {
 				}
 				return &NumberObject{Value: total / float64(len(l.Elements))}
 			case "count":
+				if len(args) > 0 {
+					// count occurrences of a specific value
+					cnt := 0
+					for _, el := range l.Elements {
+						if objectsEqual(el, args[0]) {
+							cnt++
+						}
+					}
+					return &NumberObject{Value: float64(cnt)}
+				}
 				return &NumberObject{Value: float64(len(l.Elements))}
 			case "every":
 				if len(args) < 1 { return TRUE_OBJ }
@@ -2013,7 +2051,10 @@ type BuiltinFunction struct {
 func (b *BuiltinFunction) Type() string    { return "builtin" }
 func (b *BuiltinFunction) Inspect() string { return "builtin:" + b.Name }
 
-var builtins = map[string]*BuiltinFunction{
+var builtins map[string]*BuiltinFunction
+
+func init() {
+	builtins = map[string]*BuiltinFunction{
 	"print": {
 		Name: "print",
 		Fn: func(interp *Interpreter, args ...Object) Object {
@@ -2147,9 +2188,125 @@ var builtins = map[string]*BuiltinFunction{
 	"len": {
 		Name: "len",
 		Fn: func(interp *Interpreter, args ...Object) Object {
-			return newRuntimeError(codongerror.E1004_UNDEFINED_FUNC,
-				"len() is not a global function in Codong",
-				"use .len() method instead: items.len(), str.len()")
+			if len(args) < 1 {
+				return &NumberObject{Value: 0}
+			}
+			switch v := args[0].(type) {
+			case *StringObject:
+				return &NumberObject{Value: float64(len(v.Value))}
+			case *ListObject:
+				return &NumberObject{Value: float64(len(v.Elements))}
+			case *MapObject:
+				return &NumberObject{Value: float64(len(v.Entries))}
+			}
+			return &NumberObject{Value: 0}
+		},
+	},
+	"int": {
+		Name: "int",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			if len(args) < 1 {
+				return &NumberObject{Value: 0}
+			}
+			switch v := args[0].(type) {
+			case *NumberObject:
+				return &NumberObject{Value: math.Trunc(v.Value)}
+			case *StringObject:
+				n, err := strconv.ParseFloat(v.Value, 64)
+				if err != nil {
+					return &NumberObject{Value: 0}
+				}
+				return &NumberObject{Value: math.Trunc(n)}
+			case *BoolObject:
+				if v.Value {
+					return &NumberObject{Value: 1}
+				}
+				return &NumberObject{Value: 0}
+			}
+			return &NumberObject{Value: 0}
+		},
+	},
+	"float": {
+		Name: "float",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			if len(args) < 1 {
+				return &NumberObject{Value: 0}
+			}
+			switch v := args[0].(type) {
+			case *NumberObject:
+				return v
+			case *StringObject:
+				n, err := strconv.ParseFloat(v.Value, 64)
+				if err != nil {
+					return &NumberObject{Value: 0}
+				}
+				return &NumberObject{Value: n}
+			case *BoolObject:
+				if v.Value {
+					return &NumberObject{Value: 1}
+				}
+				return &NumberObject{Value: 0}
+			}
+			return &NumberObject{Value: 0}
+		},
+	},
+	"str": {
+		Name: "str",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			if len(args) < 1 {
+				return &StringObject{Value: ""}
+			}
+			return &StringObject{Value: args[0].Inspect()}
+		},
+	},
+	"bool": {
+		Name: "bool",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			if len(args) < 1 {
+				return FALSE_OBJ
+			}
+			switch v := args[0].(type) {
+			case *BoolObject:
+				return v
+			case *NumberObject:
+				return nativeBoolToObject(v.Value != 0)
+			case *StringObject:
+				return nativeBoolToObject(v.Value != "" && v.Value != "false" && v.Value != "0")
+			case *NullObject:
+				return FALSE_OBJ
+			}
+			return nativeBoolToObject(isTruthy(args[0]))
+		},
+	},
+	"sort": {
+		Name: "sort",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			if len(args) < 1 {
+				return &ListObject{}
+			}
+			list, ok := args[0].(*ListObject)
+			if !ok {
+				return args[0]
+			}
+			// Make a copy
+			newElems := make([]Object, len(list.Elements))
+			copy(newElems, list.Elements)
+			result := &ListObject{Elements: newElems}
+			if len(args) > 1 {
+				// Custom comparator
+				sort.Slice(result.Elements, func(a, b int) bool {
+					res := interp.applyFunction(args[1], []Object{result.Elements[a], result.Elements[b]})
+					if num, ok := res.(*NumberObject); ok {
+						return num.Value < 0
+					}
+					return false
+				})
+			} else {
+				sort.Slice(result.Elements, func(a, b int) bool {
+					return compareObjects(result.Elements[a], result.Elements[b]) < 0
+				})
+			}
+			return result
 		},
 	},
 	"var": {
@@ -2210,6 +2367,7 @@ var builtins = map[string]*BuiltinFunction{
 			return &NumberObject{Value: result}
 		},
 	},
+	}
 }
 
 // ErrorModuleObject represents the error built-in module.
@@ -2278,6 +2436,32 @@ func objectsEqual(a, b Object) bool {
 		return a.Value == b.(*BoolObject).Value
 	case *NullObject:
 		return true
+	case *MapObject:
+		bm := b.(*MapObject)
+		if len(a.Entries) != len(bm.Entries) {
+			return false
+		}
+		for k, av := range a.Entries {
+			bv, exists := bm.Entries[k]
+			if !exists {
+				return false
+			}
+			if !objectsEqual(av, bv) {
+				return false
+			}
+		}
+		return true
+	case *ListObject:
+		bl := b.(*ListObject)
+		if len(a.Elements) != len(bl.Elements) {
+			return false
+		}
+		for j, ae := range a.Elements {
+			if !objectsEqual(ae, bl.Elements[j]) {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }
@@ -2326,7 +2510,7 @@ func flattenList(elements []Object, depth int) []Object {
 // evalMapMethod returns a builtin function for map methods, or nil if not a method.
 func (i *Interpreter) evalMapMethod(m *MapObject, method string) Object {
 	switch method {
-	case "len", "keys", "values", "entries", "has", "get", "delete", "merge", "map_values", "filter":
+	case "len", "keys", "values", "entries", "has", "get", "delete", "merge", "map_values", "filter", "from_entries":
 		// it's a method
 	default:
 		return nil // not a method, treat as field access
@@ -2445,6 +2629,29 @@ func (i *Interpreter) evalMapMethod(m *MapObject, method string) Object {
 						newEntries[k] = m.Entries[k]
 						newOrder = append(newOrder, k)
 					}
+				}
+				return &MapObject{Entries: newEntries, Order: newOrder}
+			case "from_entries":
+				if len(args) < 1 {
+					return m
+				}
+				list, ok := args[0].(*ListObject)
+				if !ok {
+					return m
+				}
+				newEntries := make(map[string]Object)
+				newOrder := make([]string, 0)
+				for _, el := range list.Elements {
+					pair, ok := el.(*ListObject)
+					if !ok || len(pair.Elements) < 2 {
+						continue
+					}
+					k := pair.Elements[0].Inspect()
+					v := pair.Elements[1]
+					if _, exists := newEntries[k]; !exists {
+						newOrder = append(newOrder, k)
+					}
+					newEntries[k] = v
 				}
 				return &MapObject{Entries: newEntries, Order: newOrder}
 			}

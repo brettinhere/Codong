@@ -16,7 +16,7 @@ import (
 
 var validProjectName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-const version = "0.1.2"
+const version = "0.1.3"
 
 func main() {
 	if len(os.Args) < 2 {

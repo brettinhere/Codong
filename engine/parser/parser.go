@@ -18,6 +18,7 @@ const (
 	LESSGREATER  // < > <= >=
 	SUM          // + -
 	PRODUCT      // * / %
+	POWER_PREC   // **
 	PREFIX       // -x !x
 	CALL         // fn(x)
 	INDEX        // a[0] a.b a?
@@ -37,6 +38,7 @@ var precedences = map[lexer.TokenType]int{
 	lexer.ASTERISK: PRODUCT,
 	lexer.SLASH:    PRODUCT,
 	lexer.PERCENT:  PRODUCT,
+	lexer.POWER:    POWER_PREC,
 	lexer.LPAREN:   CALL,
 	lexer.LBRACKET: INDEX,
 	lexer.DOT:      INDEX,
@@ -98,6 +100,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerInfix(lexer.GT_EQ, p.parseInfixExpression)
 	p.registerInfix(lexer.AND, p.parseInfixExpression)
 	p.registerInfix(lexer.OR, p.parseInfixExpression)
+	p.registerInfix(lexer.POWER, p.parseInfixExpression)
 	p.registerInfix(lexer.LPAREN, p.parseCallExpression)
 	p.registerInfix(lexer.LBRACKET, p.parseIndexExpression)
 	p.registerInfix(lexer.DOT, p.parseMemberAccess)
@@ -753,6 +756,9 @@ func (p *Parser) parseInterpolatedString(raw string) Expression {
 		if exprStr == "" {
 			// Empty braces {} — treat as literal
 			interp.Parts = append(interp.Parts, &StringLiteral{Token: p.curToken, Value: "{}"})
+		} else if isAllDigits(exprStr) {
+			// Pure integer index like {0}, {1} — treat as literal format placeholder
+			interp.Parts = append(interp.Parts, &StringLiteral{Token: p.curToken, Value: "{" + exprStr + "}"})
 		} else {
 			// Parse the expression inside {}
 			exprLexer := lexer.New(exprStr)
@@ -948,4 +954,17 @@ func (p *Parser) parseExpressionList(end lexer.TokenType) []Expression {
 		p.skipNewlines()
 	}
 	return list
+}
+
+// isAllDigits reports whether s consists entirely of ASCII digits.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

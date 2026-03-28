@@ -776,6 +776,22 @@ func (g *Generator) genIdentifier(name string) string {
 		return "toBool"
 	case "range":
 		return "cRange"
+	case "int":
+		return "cToInt"
+	case "float":
+		return "cToFloat"
+	case "str":
+		return "cToStr"
+	case "bool":
+		return "cToBool"
+	case "len":
+		return "cLen"
+	case "sort":
+		return "cSort"
+	case "grep":
+		return "cGrep"
+	case "rand":
+		return "cRand"
 	case "true":
 		return "true"
 	case "false":
@@ -796,6 +812,8 @@ func (g *Generator) genInfix(op, left, right string) string {
 		return fmt.Sprintf("cSub(%s, %s)", left, right)
 	case "*":
 		return fmt.Sprintf("cMul(%s, %s)", left, right)
+	case "**":
+		return fmt.Sprintf("cPow(%s, %s)", left, right)
 	case "/":
 		return fmt.Sprintf("cDiv(%s, %s)", left, right)
 	case "%":
@@ -869,6 +887,24 @@ func (g *Generator) genCall(e *parser.CallExpression) string {
 		}
 	case "toBool":
 		return fmt.Sprintf("toBoolV(%s)", args[0])
+	case "cToInt":
+		if len(args) > 0 { return fmt.Sprintf("cToInt(%s)", args[0]) }
+	case "cToFloat":
+		if len(args) > 0 { return fmt.Sprintf("cToFloat(%s)", args[0]) }
+	case "cToStr":
+		if len(args) > 0 { return fmt.Sprintf("cToStr(%s)", args[0]) }
+	case "cToBool":
+		if len(args) > 0 { return fmt.Sprintf("cToBool(%s)", args[0]) }
+	case "cLen":
+		if len(args) > 0 { return fmt.Sprintf("cLen(%s)", args[0]) }
+	case "cSort":
+		if len(args) > 0 { return fmt.Sprintf("cSort(%s)", strings.Join(args, ", ")) }
+	case "cGrep":
+		if len(args) >= 2 { return fmt.Sprintf("cGrep(%s)", strings.Join(args, ", ")) }
+	case "cRand":
+		if len(args) >= 2 { return fmt.Sprintf("cRand(toFloat(%s), toFloat(%s))", args[0], args[1]) }
+		if len(args) == 1 { return fmt.Sprintf("cRand(0, toFloat(%s))", args[0]) }
+		return "cRand(0, 1)"
 	}
 
 	// Append named args as trailing map
@@ -1537,6 +1573,16 @@ func (g *Generator) genFsCall(method string, args []string, named map[string]par
 		return "cFsTempFile()"
 	case "temp_dir":
 		return "cFsTempDir()"
+	case "is_dir":
+		return fmt.Sprintf("cFsIsDir(%s)", allArgs)
+	case "is_file":
+		return fmt.Sprintf("cFsIsFile(%s)", allArgs)
+	case "ls":
+		return fmt.Sprintf("cFsLs(%s)", allArgs)
+	case "rename":
+		return fmt.Sprintf("cFsRename(%s)", allArgs)
+	case "ext":
+		return fmt.Sprintf("cFsExt(%s)", allArgs)
 	}
 	return "nil"
 }
@@ -1556,6 +1602,8 @@ func (g *Generator) genJsonCall(method string, args []string, named map[string]p
 			}
 		}
 		return fmt.Sprintf("cJsonStringify(%s)", allArgs)
+	case "pretty":
+		return fmt.Sprintf("cJsonPretty(%s)", allArgs)
 	case "valid":
 		return fmt.Sprintf("cJsonValid(%s)", allArgs)
 	case "merge":
@@ -1577,6 +1625,8 @@ func (g *Generator) genEnvCall(method string, args []string, named map[string]pa
 	switch method {
 	case "get":
 		return fmt.Sprintf("cEnvGet(%s)", allArgs)
+	case "set":
+		return fmt.Sprintf("cEnvSet(%s)", allArgs)
 	case "require":
 		return fmt.Sprintf("cEnvRequire(%s)", allArgs)
 	case "has":
@@ -1598,6 +1648,8 @@ func (g *Generator) genTimeCall(method string, args []string, named map[string]p
 		return "cTimeNow()"
 	case "now_iso":
 		return "cTimeNowIso()"
+	case "unix":
+		return "cTimeUnix()"
 	case "format":
 		return fmt.Sprintf("cTimeFormat(%s)", allArgs)
 	case "parse":
@@ -1610,10 +1662,16 @@ func (g *Generator) genTimeCall(method string, args []string, named map[string]p
 		return fmt.Sprintf("cTimeUntil(%s)", allArgs)
 	case "add":
 		return fmt.Sprintf("cTimeAdd(%s)", allArgs)
-	case "is_before":
-		return fmt.Sprintf("cTimeIsBefore(%s)", allArgs)
-	case "is_after":
-		return fmt.Sprintf("cTimeIsAfter(%s)", allArgs)
+	case "is_before", "before":
+		return fmt.Sprintf("cTimeBefore(%s)", allArgs)
+	case "is_after", "after":
+		return fmt.Sprintf("cTimeAfter(%s)", allArgs)
+	case "weekday":
+		return fmt.Sprintf("cTimeWeekday(%s)", allArgs)
+	case "quarter":
+		return fmt.Sprintf("cTimeQuarter(%s)", allArgs)
+	case "timezone":
+		return fmt.Sprintf("cTimeTimezone(%s)", allArgs)
 	case "today_start":
 		return "cTimeTodayStart()"
 	case "today_end":

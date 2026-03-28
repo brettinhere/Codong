@@ -126,6 +126,11 @@ func (l *Lexer) NextToken() Token {
 			tok.Literal = "*="
 			l.readChar()
 			l.readChar()
+		} else if l.peekChar() == '*' {
+			tok.Type = POWER
+			tok.Literal = "**"
+			l.readChar()
+			l.readChar()
 		} else {
 			tok.Type = ASTERISK
 			tok.Literal = "*"

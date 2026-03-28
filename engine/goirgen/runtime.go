@@ -185,15 +185,28 @@ func toString(v Value) string {
 		if s { return "true" }
 		return "false"
 	case *CodongList:
-		return "[...]"
+		parts := make([]string, len(s.Elements))
+		for i, el := range s.Elements { parts[i] = toInspect(el) }
+		return "[" + strings.Join(parts, ", ") + "]"
 	case *CodongMap:
-		return "{...}"
+		parts := make([]string, 0, len(s.Order))
+		for _, k := range s.Order {
+			parts = append(parts, k+": "+toInspect(s.Entries[k]))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
 	case *CodongError:
 		return s.Error()
 	case func(...Value) Value:
 		return "fn (...)"
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+// toInspect returns the display representation of a value (strings are quoted in list/map context).
+func toInspect(v Value) string {
+	if v == nil { return "null" }
+	if s, ok := v.(string); ok { return s } // strings display without quotes at top level
+	return toString(v)
 }
 
 func toBool(v Value) bool {
@@ -309,6 +322,7 @@ func cDiv(a, b Value) Value {
 	return toFloat(a) / bf
 }
 func cMod(a, b Value) Value { return math.Mod(toFloat(a), toFloat(b)) }
+func cPow(a, b Value) Value { return math.Pow(toFloat(a), toFloat(b)) }
 
 func cEq(a, b Value) bool {
 	if a == nil && b == nil { return true }
@@ -321,11 +335,122 @@ func cEq(a, b Value) bool {
 	case bool:
 		bv, ok := b.(bool); return ok && av == bv
 	case *CodongList:
-		return a == b // reference equality
+		bl, ok := b.(*CodongList)
+		if !ok { return false }
+		if len(av.Elements) != len(bl.Elements) { return false }
+		for i, el := range av.Elements {
+			if !cEq(el, bl.Elements[i]) { return false }
+		}
+		return true
 	case *CodongMap:
-		return a == b // reference equality
+		bm, ok := b.(*CodongMap)
+		if !ok { return false }
+		if len(av.Entries) != len(bm.Entries) { return false }
+		for k, v := range av.Entries {
+			bv, exists := bm.Entries[k]
+			if !exists || !cEq(v, bv) { return false }
+		}
+		return true
 	}
 	return false
+}
+
+// --- Global built-in conversion functions ---
+
+func cToInt(v Value) Value {
+	switch s := v.(type) {
+	case float64: return math.Trunc(s)
+	case string:
+		n, err := strconv.ParseFloat(s, 64)
+		if err != nil { return float64(0) }
+		return math.Trunc(n)
+	case bool:
+		if s { return float64(1) }
+		return float64(0)
+	}
+	return float64(0)
+}
+
+func cToFloat(v Value) Value {
+	switch s := v.(type) {
+	case float64: return s
+	case string:
+		n, err := strconv.ParseFloat(s, 64)
+		if err != nil { return float64(0) }
+		return n
+	case bool:
+		if s { return float64(1) }
+		return float64(0)
+	}
+	return float64(0)
+}
+
+func cToStr(v Value) Value {
+	return toString(v)
+}
+
+func cToBool(v Value) Value {
+	if v == nil { return false }
+	switch s := v.(type) {
+	case bool: return s
+	case float64: return s != 0
+	case string: return s != "" && s != "false" && s != "0"
+	}
+	return true
+}
+
+func cLen(v Value) Value {
+	switch s := v.(type) {
+	case string: return float64(len(s))
+	case *CodongList: return float64(len(s.Elements))
+	case *CodongMap: return float64(len(s.Entries))
+	}
+	return float64(0)
+}
+
+func cSort(args ...Value) Value {
+	if len(args) < 1 { return &CodongList{} }
+	list, ok := args[0].(*CodongList)
+	if !ok { return args[0] }
+	// Make a copy
+	newElems := make([]Value, len(list.Elements))
+	copy(newElems, list.Elements)
+	result := &CodongList{Elements: newElems}
+	if len(args) > 1 {
+		compareFn, ok := args[1].(func(...Value) Value)
+		if ok {
+			sort.Slice(result.Elements, func(a, b int) bool {
+				r := compareFn(result.Elements[a], result.Elements[b])
+				return toFloat(r) < 0
+			})
+		}
+	} else {
+		sort.Slice(result.Elements, func(a, b int) bool {
+			return cLt(result.Elements[a], result.Elements[b])
+		})
+	}
+	return result
+}
+
+func cGrep(args ...Value) Value {
+	if len(args) < 2 { return &CodongList{} }
+	list, ok := args[0].(*CodongList)
+	if !ok { return &CodongList{} }
+	pattern := toString(args[1])
+	var result []Value
+	for _, el := range list.Elements {
+		if strings.Contains(toString(el), pattern) {
+			result = append(result, el)
+		}
+	}
+	return &CodongList{Elements: result}
+}
+
+func cRand(min, max float64) Value {
+	var b [8]byte
+	rand.Read(b[:])
+	n := float64(binary.BigEndian.Uint64(b[:])>>11) / float64(1<<53)
+	return min + n*(max-min)
 }
 
 func cLt(a, b Value) bool  { return toFloat(a) < toFloat(b) }
@@ -505,7 +630,7 @@ func cListMethod(l *CodongList, method string, args ...Value) Value {
 		}
 		return &CodongList{Elements: result}
 	case "flat":
-		depth := 1
+		depth := 1<<31 - 1 // deep flatten by default
 		if len(args) > 0 { depth = int(toFloat(args[0])) }
 		return &CodongList{Elements: flattenList(l.Elements, depth)}
 	case "delete":
@@ -536,6 +661,11 @@ func cListMethod(l *CodongList, method string, args ...Value) Value {
 		for _, el := range l.Elements { total += toFloat(el) }
 		return total / float64(len(l.Elements))
 	case "count":
+		if len(args) > 0 {
+			cnt := 0
+			for _, el := range l.Elements { if cEq(el, args[0]) { cnt++ } }
+			return float64(cnt)
+		}
 		return float64(len(l.Elements))
 	case "every":
 		if len(args) == 0 { return true }
@@ -614,6 +744,22 @@ func cStrMethod(s string, method string, args ...Value) Value {
 		elems := make([]Value, len(matches))
 		for i, m := range matches { elems[i] = m }
 		return &CodongList{Elements: elems}
+	case "index":
+		if len(args) < 1 { return float64(-1) }
+		return float64(strings.Index(s, toString(args[0])))
+	case "reverse":
+		runes := []rune(s)
+		for l, r := 0, len(runes)-1; l < r; l, r = l+1, r-1 { runes[l], runes[r] = runes[r], runes[l] }
+		return string(runes)
+	case "format":
+		result := s
+		for j, arg := range args {
+			result = strings.ReplaceAll(result, fmt.Sprintf("{%d}", j), toString(arg))
+		}
+		for _, arg := range args {
+			result = strings.Replace(result, "{}", toString(arg), 1)
+		}
+		return result
 	}
 	return nil
 }
@@ -673,6 +819,20 @@ func cMapMethod(m *CodongMap, method string, args ...Value) Value {
 		nm := &CodongMap{Entries: map[string]Value{}, Order: []string{}}
 		for _, k := range m.Order {
 			if isTruthy(fn(m.Entries[k], k)) { nm.Entries[k] = m.Entries[k]; nm.Order = append(nm.Order, k) }
+		}
+		return nm
+	case "from_entries":
+		if len(args) < 1 { return m }
+		list, ok := args[0].(*CodongList)
+		if !ok { return m }
+		nm := &CodongMap{Entries: map[string]Value{}, Order: []string{}}
+		for _, el := range list.Elements {
+			pair, ok := el.(*CodongList)
+			if !ok || len(pair.Elements) < 2 { continue }
+			k := toString(pair.Elements[0])
+			v := pair.Elements[1]
+			if _, exists := nm.Entries[k]; !exists { nm.Order = append(nm.Order, k) }
+			nm.Entries[k] = v
 		}
 		return nm
 	case "cookie":
@@ -3066,6 +3226,41 @@ func cFsMkdir(args ...Value) Value {
 	return true
 }
 
+func cFsIsDir(args ...Value) Value {
+	if len(args) < 1 { return false }
+	p := cFsResolve(toString(args[0]))
+	info, err := os.Stat(p)
+	if err != nil { return false }
+	return info.IsDir()
+}
+
+func cFsLs(args ...Value) Value {
+	return cFsList(args...)
+}
+
+func cFsRename(args ...Value) Value {
+	if len(args) < 2 { return cError("E5008_IO_ERROR", "fs.rename requires src and dst", "fix", "fs.rename(src, dst)") }
+	src := cFsResolve(toString(args[0]))
+	dst := cFsResolve(toString(args[1]))
+	if err := os.Rename(src, dst); err != nil {
+		return cError("E5008_IO_ERROR", err.Error(), "fix", "check paths and permissions")
+	}
+	return true
+}
+
+func cFsExt(args ...Value) Value {
+	if len(args) < 1 { return "" }
+	return filepath.Ext(toString(args[0]))
+}
+
+func cFsIsFile(args ...Value) Value {
+	if len(args) < 1 { return false }
+	p := cFsResolve(toString(args[0]))
+	info, err := os.Stat(p)
+	if err != nil { return false }
+	return !info.IsDir()
+}
+
 func cFsRmdir(args ...Value) Value {
 	if len(args) < 1 { return cError("E5008_IO_ERROR", "fs.rmdir requires a path", "fix", "fs.rmdir(path)") }
 	p := cFsResolve(toString(args[0]))
@@ -3306,6 +3501,16 @@ func cJsonValid(args ...Value) Value {
 	return json.Valid([]byte(toString(args[0])))
 }
 
+func cJsonPretty(args ...Value) Value {
+	if len(args) < 1 { return "null" }
+	goVal := codongToGo(args[0])
+	data, err := json.MarshalIndent(goVal, "", "  ")
+	if err != nil {
+		return cError("E6002_STRINGIFY_ERROR", fmt.Sprintf("JSON stringify error: %s", err.Error()), "fix", "remove circular references")
+	}
+	return string(data)
+}
+
 func cJsonMerge(args ...Value) Value {
 	if len(args) < 2 {
 		if len(args) == 1 { return args[0] }
@@ -3430,6 +3635,14 @@ func cJsonUnflatten(args ...Value) Value {
 // ============================================================
 // env module runtime functions
 // ============================================================
+
+func cEnvSet(args ...Value) Value {
+	if len(args) < 2 { return nil }
+	name := toString(args[0])
+	val := toString(args[1])
+	os.Setenv(name, val)
+	return true
+}
 
 func cEnvGet(args ...Value) Value {
 	if len(args) < 1 { return nil }
@@ -3556,8 +3769,7 @@ func cTimeDiff(args ...Value) Value {
 	t1 := int64(toFloat(args[0]))
 	t2 := int64(toFloat(args[1]))
 	ms := t2 - t1
-	if ms < 0 { ms = -ms }
-	return cMap("ms", float64(ms), "s", float64(ms/1000), "m", float64(ms/60000), "h", float64(ms/3600000), "days", float64(ms/86400000))
+	return float64(ms)
 }
 
 func cTimeSince(args ...Value) Value {
@@ -3608,6 +3820,63 @@ func cTimeTodayEnd(args ...Value) Value {
 	now := time.Now().UTC()
 	end := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999000000, time.UTC)
 	return float64(end.UnixMilli())
+}
+
+func cTimeUnix(args ...Value) Value {
+	return float64(time.Now().Unix())
+}
+
+func cTimeWeekday(args ...Value) Value {
+	if len(args) < 1 { return float64(time.Now().Weekday()) }
+	tsMs := int64(toFloat(args[0]))
+	t := time.UnixMilli(tsMs).UTC()
+	return float64(t.Weekday())
+}
+
+func cTimeQuarter(args ...Value) Value {
+	if len(args) < 1 {
+		m := int(time.Now().Month())
+		return float64((m-1)/3 + 1)
+	}
+	tsMs := int64(toFloat(args[0]))
+	t := time.UnixMilli(tsMs).UTC()
+	m := int(t.Month())
+	return float64((m-1)/3 + 1)
+}
+
+func cTimeBefore(args ...Value) Value {
+	if len(args) < 2 { return false }
+	return toFloat(args[0]) < toFloat(args[1])
+}
+
+func cTimeAfter(args ...Value) Value {
+	if len(args) < 2 { return false }
+	return toFloat(args[0]) > toFloat(args[1])
+}
+
+func cTimeTimezone(args ...Value) Value {
+	if len(args) < 1 { return cTimeNow() }
+	tzName := toString(args[0])
+	loc, err := time.LoadLocation(tzName)
+	if err != nil { return cTimeNow() }
+	t := time.Now().In(loc)
+	return float64(t.UnixMilli())
+}
+
+func cTimeStat(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	tsMs := int64(toFloat(args[0]))
+	t := time.UnixMilli(tsMs).UTC()
+	return cMap(
+		"year", float64(t.Year()),
+		"month", float64(t.Month()),
+		"day", float64(t.Day()),
+		"hour", float64(t.Hour()),
+		"minute", float64(t.Minute()),
+		"second", float64(t.Second()),
+		"weekday", float64(t.Weekday()),
+		"quarter", float64((int(t.Month())-1)/3+1),
+	)
 }
 
 // --- DB Extension: MySQL/PostgreSQL ---

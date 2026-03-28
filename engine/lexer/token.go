@@ -42,6 +42,8 @@ const (
 	DOT      TokenType = "."
 	COLON    TokenType = ":"
 
+	POWER           TokenType = "**"
+
 	PLUS_ASSIGN     TokenType = "+="
 	MINUS_ASSIGN    TokenType = "-="
 	ASTERISK_ASSIGN TokenType = "*="
