@@ -13,10 +13,10 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG_v0.1.1.md"><img src="https://img.shields.io/badge/version-v0.1.1_(2026--03--26)-informational.svg" alt="v0.1.1"></a>
+  <a href="./CHANGELOG_v0.1.3.md"><img src="https://img.shields.io/badge/version-v0.1.3_(2026--03--28)-informational.svg" alt="v0.1.3"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/language-Codong-orange.svg" alt="Language: Codong">
-  <img src="https://img.shields.io/badge/tests-1201%20passed-brightgreen.svg" alt="Tests: 1201 passed">
+  <img src="https://img.shields.io/badge/tests-1427%20passed-brightgreen.svg" alt="Tests: 1427 passed">
   <a href="https://codong.org/arena/"><img src="https://img.shields.io/badge/arena-live-purple.svg" alt="Arena: Live"></a>
 </p>
 
@@ -27,6 +27,15 @@
   <a href="./docs/README_ru.md">Russian</a> |
   <a href="./docs/README_de.md">German</a>
 </p>
+
+---
+
+## Releases
+
+| Version | Date | Highlights |
+|---------|------|-----------|
+| [v0.1.3](./CHANGELOG_v0.1.3.md) | 2026-03-28 | Compilation cache (170× speedup), language completeness, 1,427 tests passing |
+| [v0.1.1](./CHANGELOG_v0.1.1.md) | 2026-03-26 | 58 bug fixes, 100% pass rate on core test suite |
 
 ---
 

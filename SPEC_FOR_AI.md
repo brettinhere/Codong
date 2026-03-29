@@ -494,17 +494,46 @@ fn process(s: Searchable) {
 class MySearcher implements Searchable { }
 ```
 
-**Type conversion:** use built-in functions.
+**Type conversion:** use built-in functions `int()`, `float()`, `str()`, `bool()`.
 
 ```
 // CORRECT
+s = str(42)          // "42"
+n = int("42")        // 42
+f = float("3.14")    // 3.14
+b = bool(1)          // true
+
+// ALSO CORRECT (legacy aliases)
 s = to_string(42)
 n = to_number("42")
-b = to_bool("true")
 
 // WRONG — no casting syntax
 s = (string)42
 s = 42 as string
+```
+
+**Power operator:** `**`
+
+```
+// CORRECT
+result = 2**10      // 1024
+cube   = x**3
+
+// WRONG — no ^ or pow()
+result = 2^10
+result = pow(2, 10)
+```
+
+**Global utility functions:**
+
+```
+// CORRECT
+n = len([1, 2, 3])           // 3 — global alias for .len()
+sorted = sort([3, 1, 2])     // [1, 2, 3]
+sorted = sort([3, 1, 2], fn(a, b){ return a > b })  // descending
+
+// ALSO CORRECT — method form
+n = [1, 2, 3].len()
 ```
 
 ---
@@ -752,7 +781,7 @@ s = "hello"
 upper = s.upper()      // upper = "HELLO", s is still "hello"
 ```
 
-### string (17 methods, all return new strings)
+### string (21 methods, all return new strings)
 
 ```
 s = "Hello World"
@@ -768,8 +797,14 @@ s.starts_with("He")  // true
 s.ends_with("ld")    // true
 s.replace("World", "Codong")  // "Hello Codong" (s unchanged)
 s.index_of("World")  // 6
+s.index("World")     // 6 (alias for index_of)
 s.slice(0, 5)        // "Hello"
 s.repeat(2)          // "Hello WorldHello World"
+s.reverse()          // "dlroW olleH"
+s.format(42)         // "Hello World" (positional: "1+2={0}".format(3) → "1+2=3")
+s.count("l")         // 3 (occurrences of substring)
+s.pad_start(15, "0") // "0000Hello World"
+s.pad_end(15, ".")   // "Hello World...."
 "42".to_number()     // 42
 "true".to_bool()     // true
 "abc123".match("[0-9]+")  // ["123"]
@@ -801,14 +836,19 @@ l.find(fn(x) => x > 2)    // 3
 l.find_index(fn(x) => x > 2)  // 0
 l.contains(1)        // true
 l.index_of(1)        // 1
-l.flat()             // flattens nested lists (new list)
+l.flat()             // deep flattens nested lists recursively (new list)
+                     // [1, [2, [3, 4]]] → [1, 2, 3, 4]
+l.flatten()          // alias for flat()
+l.count(2)           // number of occurrences of element 2 in list
+l.chunk(2)           // split into sub-lists of size 2: [[3,1],[2]]
+l.zip([4,5,6])       // [[3,4],[1,5],[2,6]]
 l.unique()           // deduplicates (new list)
 l.join("-")          // "3-1-2" (returns string)
 l.first()            // 3
 l.last()             // 2
 ```
 
-### map (10 methods)
+### map (11 methods)
 
 Mutating: `delete` only — modifies original, returns self.
 Non-mutating: all others — return new values.
@@ -826,6 +866,11 @@ m.get("x", 0)        // 0 (default)
 m.map_values(fn(v) => v * 10)   // {a: 10, b: 20, c: 30} (new map)
 m.filter(fn(v) => v > 1)       // {b: 2, c: 3} (new map)
 m.merge({d: 4})      // {a: 1, b: 2, c: 3, d: 4} (new map, m unchanged)
+m.from_entries([{k:"x",v:1},{k:"y",v:2}])  // {x: 1, y: 2}
+
+// Map equality
+{a:1} == {a:1}       // true (value-based comparison)
+{a:1} == {a:2}       // false
 
 // Mutating
 m.delete("a")        // m is now {b: 2, c: 3}, returns m
