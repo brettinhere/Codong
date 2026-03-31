@@ -3390,7 +3390,8 @@ func cFsJoin(args ...Value) Value {
 }
 
 func cFsCwd(args ...Value) Value {
-	return filepath.ToSlash(cFsWorkDir)
+	cwd, _ := os.Getwd()
+	return filepath.ToSlash(cwd)
 }
 
 func cFsBasename(args ...Value) Value {
