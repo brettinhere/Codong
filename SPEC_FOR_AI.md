@@ -711,6 +711,8 @@ Globally available without import. These are functions, NOT keywords.
 | `to_number(x)` | number/null | convert to number, null if invalid |
 | `to_bool(x)` | bool | convert to bool |
 | `range(start, end)` | list | integers from start to end-1 |
+| `chr(n)` | string | convert number (0-255) to character |
+| `base64_decode(s)` | string | decode base64 string |
 
 ```
 // CORRECT — print is the standard output function
@@ -745,6 +747,14 @@ nums = range(0, 5)    // [0, 1, 2, 3, 4]
 for i in range(1, 4) {
     print(i)           // 1, 2, 3
 }
+
+// CORRECT — chr converts number (0-255) to character
+char = chr(65)         // "A"
+char = chr(97)         // "a"
+char = chr(48)         // "0"
+
+// CORRECT — base64_decode decodes base64 string
+decoded = base64_decode("SGVsbG8=")  // "Hello"
 ```
 
 ---
@@ -1119,6 +1129,47 @@ env.load("./.env")                            // load .env file
 
 // WRONG — do not hardcode secrets; use env.require
 secret = "hardcoded_secret_123"
+```
+
+### args — Command-Line Arguments
+
+```
+// CORRECT — access command-line arguments passed via `codong run script.cod -- arg1 arg2`
+all_args = args.all()              // list of all arguments (excluding program name)
+first_arg = args.get(0)            // get first argument by index
+third_arg = args.get(2, "default") // get with default if index out of bounds
+has_help = args.has("--help")      // check if argument exists
+num_args = args.len()              // number of arguments
+
+// CORRECT — typical usage pattern
+for arg in args.all() {
+    if arg == "--verbose" {
+        verbose = true
+    }
+}
+
+// WRONG — args module only available in run/eval mode with -- separator
+// args.all() returns empty list if no arguments provided
+```
+
+### web — HTTP Server
+
+```
+// CORRECT — start HTTP server
+server = web.serve(port: 8080)
+
+// CORRECT — handle port conflict error
+try {
+    server = web.serve(port: 8080)
+} catch e {
+    // E9001_PORT_IN_USE: port already in use
+    // E9002_SERVER_ERROR: other server errors
+    print("server error: {e.code}")
+}
+
+// WRONG — port conflict terminates program with [E9001_PORT_IN_USE] error
+// fix: use a different port or stop the process using port 8080
+server = web.serve(port: 8080)  // if port is in use, exits with error
 ```
 
 ### time — Date and Time
