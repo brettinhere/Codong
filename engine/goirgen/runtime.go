@@ -1161,6 +1161,14 @@ type cSessionContext struct {
 }
 var cCurrentSession *cSessionContext
 
+// cWebCatchAll registers a catch-all handler for all unmatched routes
+var cWebCatchAllHandler func(...Value) Value
+
+func cWebCatchAll(handler Value) Value {
+	cWebCatchAllHandler = handler.(func(...Value) Value)
+	return nil
+}
+
 func cWebRoute(method string, pattern Value, handler Value) Value {
 	p := toString(pattern)
 	// Convert :param to {param}
@@ -1286,6 +1294,72 @@ func cWebServe(port int) Value {
 			writeResponse(w, req, result)
 		})
 	}
+	
+	// Register catch-all handler (after specific routes, so it only catches unmatched)
+	if cWebCatchAllHandler != nil {
+		catchHandler := cWebCatchAllHandler
+		mux.HandleFunc("GET /{path...}", func(w http.ResponseWriter, req *http.Request) {
+			reqMap := cMap(
+				"method", req.Method,
+				"path", req.URL.Path,
+				"url", req.URL.String(),
+			)
+			// Parse query
+			qm := cMap()
+			for k, v := range req.URL.Query() { cSet(qm, k, v[0]) }
+			cSet(reqMap, "query", qm)
+			// Parse params
+			pm := cMap()
+			cSet(reqMap, "param", pm)
+			// Parse headers
+			hm := cMap()
+			for k, v := range req.Header {
+				cSet(hm, k, v[0])
+				cSet(hm, strings.ToLower(k), v[0])
+			}
+			cSet(reqMap, "headers", hm)
+			cSet(reqMap, "header", func(args ...Value) Value {
+				if len(args) > 0 { if v, ok := hm.Entries[strings.ToLower(toString(args[0]))]; ok { return v } }
+				return nil
+			})
+			// Cookies
+			cm := cMap()
+			for _, c := range req.Cookies() { cSet(cm, c.Name, c.Value) }
+			cSet(reqMap, "cookies", cm)
+			cSet(reqMap, "cookie", func(args ...Value) Value {
+				if len(args) > 0 { if v, ok := cm.Entries[toString(args[0])]; ok { return v } }
+				return nil
+			})
+			// Client IP
+			ip := req.RemoteAddr
+			if fwd := req.Header.Get("X-Forwarded-For"); fwd != "" { ip = fwd }
+			cSet(reqMap, "ip", ip)
+			// Context
+			ctxMap := cMap()
+			cSet(reqMap, "context", ctxMap)
+			// query_all()
+			cSet(reqMap, "query_all", func(args ...Value) Value { return qm })
+			// Parse body
+			contentType := req.Header.Get("Content-Type")
+			if strings.HasPrefix(contentType, "multipart/form-data") {
+				cParseMultipartBody(req, reqMap)
+			} else if req.Body != nil {
+				bodyBytes, _ := io.ReadAll(req.Body)
+				if len(bodyBytes) > 0 {
+					var jdata interface{}
+					if json.Unmarshal(bodyBytes, &jdata) == nil {
+						cSet(reqMap, "body", goToValue(jdata))
+					} else {
+						cSet(reqMap, "body", string(bodyBytes))
+					}
+				}
+			}
+			// Call handler
+			result := catchHandler(reqMap)
+			writeResponse(w, req, result)
+		})
+	}
+	
 	// Register WebSocket routes
 	for _, ws := range cWebWSRoutes {
 		wsHandler := ws.handler

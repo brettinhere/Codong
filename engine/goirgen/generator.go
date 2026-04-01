@@ -1006,6 +1006,8 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 	case "get", "post", "put", "delete", "patch":
 		goMethod := strings.ToUpper(method)
 		return fmt.Sprintf("cWebRoute(\"%s\", %s, %s)", goMethod, args[0], args[1])
+	case "catch_all":
+		return fmt.Sprintf("cWebCatchAll(%s)", args[0])
 	case "serve":
 		port := "8080"
 		if len(args) > 0 {

@@ -1170,6 +1170,19 @@ try {
 // WRONG — port conflict terminates program with [E9001_PORT_IN_USE] error
 // fix: use a different port or stop the process using port 8080
 server = web.serve(port: 8080)  // if port is in use, exits with error
+
+// CORRECT — catch-all route for dynamic routing (e.g., static file server)
+web.get("/", fn(req) {
+    return web.html("<h1>Home</h1>")
+})
+web.catch_all(fn(req) {
+    // req.path contains the full path
+    path = req.path
+    if fs.is_file("." + path) {
+        return web.file("." + path)
+    }
+    return web.html("<h1>404</h1>", status: 404)
+})
 ```
 
 ### time — Date and Time
@@ -1656,6 +1669,7 @@ try {
 | Map access | `m.key`, `m["key"]` | only `m.get()` |
 | List access | `l[0]`, `l[-1]` | `l.at(0)` |
 | HTTP server | `web.serve(port: 8080)` | `express()`, `http.ListenAndServe()` |
+| Catch-all route | `web.catch_all(handler)` | manual wildcard routing |
 | HTTP client | `http.get(url)` | `fetch(url)`, `requests.get(url)` |
 | DB connect | `db.connect(url)` | `new Pool()`, `createConnection()` |
 | File read | `fs.read(path)` | `os.ReadFile()`, `fs.readFileSync()` |

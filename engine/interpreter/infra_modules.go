@@ -226,6 +226,30 @@ func (i *Interpreter) evalFsModuleMethod(prop string) Object {
 				_, err := os.Stat(absPath)
 				return nativeBoolToObject(err == nil)
 
+			case "is_dir":
+				if len(args) < 1 {
+					return FALSE_OBJ
+				}
+				path := args[0].Inspect()
+				absPath := interp.fsResolve(path)
+				info, err := os.Stat(absPath)
+				if err != nil {
+					return FALSE_OBJ
+				}
+				return nativeBoolToObject(info.IsDir())
+
+			case "is_file":
+				if len(args) < 1 {
+					return FALSE_OBJ
+				}
+				path := args[0].Inspect()
+				absPath := interp.fsResolve(path)
+				info, err := os.Stat(absPath)
+				if err != nil {
+					return FALSE_OBJ
+				}
+				return nativeBoolToObject(!info.IsDir())
+
 			case "delete":
 				if len(args) < 1 {
 					return fsError("E5008_IO_ERROR", "fs.delete requires a path argument", "fs.delete(\"./file.txt\")")
