@@ -15,6 +15,40 @@ import (
 	"github.com/codong-lang/codong/engine/parser"
 )
 
+// generateMinimalGoMod analyzes the generated Go source and returns a minimal go.mod
+// with only the required dependencies.
+func generateMinimalGoMod(goSource string) string {
+	base := `module codong-app
+
+go 1.22
+`
+	// Check which modules are actually used in the generated code
+	requires := []string{}
+
+	// DB module - includes SQLite, MySQL, PostgreSQL drivers
+	if strings.Contains(goSource, "cDbConnect") || strings.Contains(goSource, "cDbQuery") || strings.Contains(goSource, "cDbFind") {
+		requires = append(requires, "\tmodernc.org/sqlite v1.47.0")
+		requires = append(requires, "\tgithub.com/go-sql-driver/mysql v1.7.1")
+		requires = append(requires, "\tgithub.com/lib/pq v1.10.9")
+	}
+
+	// Image module - includes image processing libraries
+	if strings.Contains(goSource, "cImageOpen") || strings.Contains(goSource, "cImageResize") || strings.Contains(goSource, "cImageFit") {
+		requires = append(requires, "\tgolang.org/x/image v0.23.0")
+	}
+
+	// Redis cache module
+	if strings.Contains(goSource, "cRedis") {
+		requires = append(requires, "\tgithub.com/redis/go-redis/v9 v9.3.0")
+	}
+
+	if len(requires) == 0 {
+		return base
+	}
+
+	return base + "require (\n" + strings.Join(requires, "\n") + "\n)\n"
+}
+
 // cacheDir returns ~/.codong/cache
 func cacheDir() string {
 	home, err := os.UserHomeDir()
@@ -171,19 +205,8 @@ func execInDirWithStatic(dir, goSource, outputPath string, static bool) error {
 		return fmt.Errorf("cannot write main.go: %w", err)
 	}
 
-	// Write go.mod
-	goMod := `module codong-app
-
-go 1.22
-
-require (
-	github.com/go-sql-driver/mysql v1.7.1
-	github.com/lib/pq v1.10.9
-	github.com/redis/go-redis/v9 v9.3.0
-	golang.org/x/image v0.23.0
-	modernc.org/sqlite v1.47.0
-)
-`
+	// Analyze dependencies and generate minimal go.mod
+	goMod := generateMinimalGoMod(goSource)
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644); err != nil {
 		return fmt.Errorf("cannot write go.mod: %w", err)
 	}
@@ -208,7 +231,9 @@ require (
 		cmd = exec.Command("go", "build", "-ldflags", "-s -w -extldflags '-static'", "-o", outputPath, "main.go")
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	} else {
-		cmd = exec.Command("go", "build", "-o", outputPath, "main.go")
+		// Normal build: strip debug info and disable CGO to reduce binary size
+		cmd = exec.Command("go", "build", "-ldflags", "-s -w", "-o", outputPath, "main.go")
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	}
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
@@ -235,19 +260,8 @@ func execInDirWithArgs(dir, goSource, mode string, args []string, extra ...strin
 		return fmt.Errorf("cannot write main.go: %w", err)
 	}
 
-	// Write go.mod
-	goMod := `module codong-app
-
-go 1.22
-
-require (
-	github.com/go-sql-driver/mysql v1.7.1
-	github.com/lib/pq v1.10.9
-	github.com/redis/go-redis/v9 v9.3.0
-	golang.org/x/image v0.23.0
-	modernc.org/sqlite v1.47.0
-)
-`
+	// Analyze dependencies and generate minimal go.mod
+	goMod := generateMinimalGoMod(goSource)
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644); err != nil {
 		return fmt.Errorf("cannot write go.mod: %w", err)
 	}
