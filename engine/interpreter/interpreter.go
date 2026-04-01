@@ -826,6 +826,9 @@ func (i *Interpreter) evalIdentifier(node *parser.Identifier, env *Environment) 
 	if node.Value == "env" {
 		return envModuleSingleton
 	}
+	if node.Value == "args" {
+		return argsModuleSingleton
+	}
 	if node.Value == "time" {
 		return timeModuleSingleton
 	}
@@ -1080,6 +1083,11 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 	// env module methods: env.get(), env.require(), etc.
 	if _, ok := obj.(*EnvModuleObject); ok {
 		return i.evalEnvModuleMethod(prop)
+	}
+
+	// args module methods: args.get(), args.all(), etc.
+	if _, ok := obj.(*ArgsModuleObject); ok {
+		return i.evalArgsModuleMethod(prop)
 	}
 
 	// time module methods: time.now(), time.sleep(), etc.
@@ -2085,6 +2093,22 @@ func init() {
 		Fn: func(interp *Interpreter, args ...Object) Object {
 			if len(args) > 0 {
 				return &StringObject{Value: args[0].Type()}
+			}
+			return NULL_OBJ
+		},
+	},
+	"chr": {
+		Name: "chr",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			if len(args) < 1 {
+				return NULL_OBJ
+			}
+			switch v := args[0].(type) {
+			case *NumberObject:
+				if v.Value >= 0 && v.Value <= 255 {
+					return &StringObject{Value: string(rune(int(v.Value)))}
+				}
+				return NULL_OBJ
 			}
 			return NULL_OBJ
 		},

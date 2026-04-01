@@ -711,6 +711,8 @@ Globally available without import. These are functions, NOT keywords.
 | `to_number(x)` | number/null | convert to number, null if invalid |
 | `to_bool(x)` | bool | convert to bool |
 | `range(start, end)` | list | integers from start to end-1 |
+| `chr(n)` | string | convert number (0-255) to character |
+| `base64_decode(s)` | string | decode base64 string |
 
 ```
 // CORRECT — print is the standard output function
@@ -745,6 +747,14 @@ nums = range(0, 5)    // [0, 1, 2, 3, 4]
 for i in range(1, 4) {
     print(i)           // 1, 2, 3
 }
+
+// CORRECT — chr converts number (0-255) to character
+char = chr(65)         // "A"
+char = chr(97)         // "a"
+char = chr(48)         // "0"
+
+// CORRECT — base64_decode decodes base64 string
+decoded = base64_decode("SGVsbG8=")  // "Hello"
 ```
 
 ---
@@ -1119,6 +1129,60 @@ env.load("./.env")                            // load .env file
 
 // WRONG — do not hardcode secrets; use env.require
 secret = "hardcoded_secret_123"
+```
+
+### args — Command-Line Arguments
+
+```
+// CORRECT — access command-line arguments passed via `codong run script.cod -- arg1 arg2`
+all_args = args.all()              // list of all arguments (excluding program name)
+first_arg = args.get(0)            // get first argument by index
+third_arg = args.get(2, "default") // get with default if index out of bounds
+has_help = args.has("--help")      // check if argument exists
+num_args = args.len()              // number of arguments
+
+// CORRECT — typical usage pattern
+for arg in args.all() {
+    if arg == "--verbose" {
+        verbose = true
+    }
+}
+
+// WRONG — args module only available in run/eval mode with -- separator
+// args.all() returns empty list if no arguments provided
+```
+
+### web — HTTP Server
+
+```
+// CORRECT — start HTTP server
+server = web.serve(port: 8080)
+
+// CORRECT — handle port conflict error
+try {
+    server = web.serve(port: 8080)
+} catch e {
+    // E9001_PORT_IN_USE: port already in use
+    // E9002_SERVER_ERROR: other server errors
+    print("server error: {e.code}")
+}
+
+// WRONG — port conflict terminates program with [E9001_PORT_IN_USE] error
+// fix: use a different port or stop the process using port 8080
+server = web.serve(port: 8080)  // if port is in use, exits with error
+
+// CORRECT — catch-all route for dynamic routing (e.g., static file server)
+web.get("/", fn(req) {
+    return web.html("<h1>Home</h1>")
+})
+web.catch_all(fn(req) {
+    // req.path contains the full path
+    path = req.path
+    if fs.is_file("." + path) {
+        return web.file("." + path)
+    }
+    return web.html("<h1>404</h1>", status: 404)
+})
 ```
 
 ### time — Date and Time
@@ -1605,6 +1669,7 @@ try {
 | Map access | `m.key`, `m["key"]` | only `m.get()` |
 | List access | `l[0]`, `l[-1]` | `l.at(0)` |
 | HTTP server | `web.serve(port: 8080)` | `express()`, `http.ListenAndServe()` |
+| Catch-all route | `web.catch_all(handler)` | manual wildcard routing |
 | HTTP client | `http.get(url)` | `fetch(url)`, `requests.get(url)` |
 | DB connect | `db.connect(url)` | `new Pool()`, `createConnection()` |
 | File read | `fs.read(path)` | `os.ReadFile()`, `fs.readFileSync()` |
@@ -1624,6 +1689,46 @@ try {
 | Iterate map | `for k in m.keys()` | `for k in m` |
 | Multiple returns | `return {a: 1, b: 2}` | `return a, b` |
 | Length | `x.len()` | `len(x)` |
+| Static build | `codong build -static app.cod` | `codong build app.cod` (dynamic) |
+
+---
+
+## CLI Commands
+
+```
+// CORRECT — run modes
+codong eval script.cod           # AST interpreter, instant startup, no stdlib
+codong run app.cod               # Go IR, full stdlib, development
+codong build app.cod             # Compile to dynamic binary (production)
+codong build -static app.cod     # Compile to static binary (portable)
+codong build app.cod -o myapp    # Custom output name
+codong build -static app.cod -o myapp  # Static binary with custom name
+
+// CORRECT — pass arguments to script
+codong run script.cod -- arg1 arg2 --verbose
+codong eval script.cod -- input.txt output.txt
+
+// CORRECT — other commands
+codong new myproject             # Create new project
+codong version                   # Show version
+codong fmt file.cod              # Format code (planned)
+```
+
+**Static vs Dynamic Build:**
+
+| Option | Binary Size | Portability | Use Case |
+|--------|-------------|-------------|----------|
+| `codong build app.cod` | ~15MB | Requires system libc | Development, same-OS deployment |
+| `codong build -static app.cod` | ~10MB | Fully standalone | Production, Docker, cross-distro |
+
+```
+// CORRECT — static build for maximum portability
+/tmp/codong build -static server.cod -o /app/server
+# Result: single static binary, no external dependencies
+
+// WRONG — static build may fail with CGO dependencies
+// Solution: use dynamic build or refactor to avoid CGO modules
+```
 
 ---
 

@@ -370,9 +370,11 @@ graph LR
 | `codong build` | .cod -> AST -> Go IR -> `go build` | N/A (compile once) | Production deployment |
 
 ```bash
-codong eval script.cod    # AST interpreter, instant startup
-codong run app.cod        # Go IR, full stdlib, development
-codong build app.cod      # Single static binary, production
+codong eval script.cod              # AST interpreter, instant startup
+codong run app.cod                  # Go IR, full stdlib, development
+codong build app.cod                # Dynamic binary (same OS)
+codong build -static app.cod        # Static binary (portable)
+codong build -static app.cod -o myapp  # Static binary with custom name
 ```
 
 ### Relationship with Go
@@ -1174,7 +1176,7 @@ conversation.
 | 1 | Done | `codong eval` -- core language, error module, CLI |
 | 2 | In progress | `web`, `db`, `http`, `llm` modules |
 | 3 | Planned | `agent`, `cloud`, `queue`, `cron` modules |
-| 4 | Planned | `codong build` -- single static binary |
+| 4 | Done | `codong build` -- static/dynamic binary with `-static` flag |
 | 5 | Planned | 50 examples + full documentation |
 | 6 | Planned | codong.org + browser Playground (WASM) |
 | 7 | Planned | VS Code extension + MCP Server for Claude Desktop |
