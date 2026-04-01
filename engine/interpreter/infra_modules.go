@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -249,6 +250,18 @@ func (i *Interpreter) evalFsModuleMethod(prop string) Object {
 					return FALSE_OBJ
 				}
 				return nativeBoolToObject(!info.IsDir())
+
+			case "mime_type":
+				if len(args) < 1 {
+					return &StringObject{Value: "application/octet-stream"}
+				}
+				path := args[0].Inspect()
+				ext := filepath.Ext(path)
+				mimeType := mime.TypeByExtension(ext)
+				if mimeType == "" {
+					mimeType = "application/octet-stream"
+				}
+				return &StringObject{Value: mimeType}
 
 			case "delete":
 				if len(args) < 1 {
