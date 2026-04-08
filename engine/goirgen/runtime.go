@@ -399,13 +399,21 @@ func cChr(v Value) Value {
 	return ""
 }
 
-func cBase64Decode(v Value) Value {
+func cEncodingBase64Decode(v Value) Value {
 	if s, ok := v.(string); ok {
 		decoded, err := base64.StdEncoding.DecodeString(s)
 		if err != nil {
 			return ""
 		}
 		return string(decoded)
+	}
+	return ""
+}
+
+func cEncodingBase64Encode(v Value) Value {
+	if s, ok := v.(string); ok {
+		encoded := base64.StdEncoding.EncodeToString([]byte(s))
+		return encoded
 	}
 	return ""
 }

@@ -784,8 +784,6 @@ func (g *Generator) genIdentifier(name string) string {
 		return "cToStr"
 	case "chr":
 		return "cChr"
-	case "base64_decode":
-		return "cBase64Decode"
 	case "bool":
 		return "cToBool"
 	case "len":
@@ -899,8 +897,6 @@ func (g *Generator) genCall(e *parser.CallExpression) string {
 		if len(args) > 0 { return fmt.Sprintf("cToStr(%s)", args[0]) }
 	case "cChr":
 		if len(args) > 0 { return fmt.Sprintf("cChr(%s)", args[0]) }
-	case "cBase64Decode":
-		if len(args) > 0 { return fmt.Sprintf("cBase64Decode(%s)", args[0]) }
 	case "cToBool":
 		if len(args) > 0 { return fmt.Sprintf("cToBool(%s)", args[0]) }
 	case "cLen":
@@ -968,6 +964,8 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 			return g.genImageCall(method, args, named)
 		case "oauth":
 			return g.genOAuthCall(method, args, named)
+		case "encoding":
+			return g.genEncodingCall(method, args, named)
 		}
 	}
 
@@ -1703,6 +1701,17 @@ func (g *Generator) genTimeCall(method string, args []string, named map[string]p
 		return "cTimeTodayStart()"
 	case "today_end":
 		return "cTimeTodayEnd()"
+	}
+	return "nil"
+}
+
+func (g *Generator) genEncodingCall(method string, args []string, named map[string]parser.Expression) string {
+	allArgs := strings.Join(args, ", ")
+	switch method {
+	case "base64_decode":
+		return fmt.Sprintf("cEncodingBase64Decode(%s)", allArgs)
+	case "base64_encode":
+		return fmt.Sprintf("cEncodingBase64Encode(%s)", allArgs)
 	}
 	return "nil"
 }

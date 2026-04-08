@@ -841,6 +841,9 @@ func (i *Interpreter) evalIdentifier(node *parser.Identifier, env *Environment) 
 	if node.Value == "oauth" {
 		return oauthModuleSingleton
 	}
+	if node.Value == "encoding" {
+		return encodingModuleSingleton
+	}
 	// Check built-in functions
 	if builtin, ok := builtins[node.Value]; ok {
 		return builtin
@@ -1103,6 +1106,11 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 	// image module methods: image.open(), image.info(), etc.
 	if _, ok := obj.(*ImageModuleObject); ok {
 		return i.evalImageModuleMethod(prop)
+	}
+
+	// encoding module methods: encoding.base64_decode(), encoding.base64_encode(), etc.
+	if _, ok := obj.(*EncodingModuleObject); ok {
+		return i.evalEncodingModuleMethod(prop)
 	}
 
 	// image object methods: img.resize(), img.save(), etc.
