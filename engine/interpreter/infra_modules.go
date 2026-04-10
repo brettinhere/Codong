@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -41,6 +42,14 @@ func (e *EnvModuleObject) Type() string    { return "module" }
 func (e *EnvModuleObject) Inspect() string { return "<module:env>" }
 
 var envModuleSingleton = &EnvModuleObject{}
+
+// ArgsModuleObject is the singleton `args` module for command-line arguments.
+type ArgsModuleObject struct{}
+
+func (a *ArgsModuleObject) Type() string    { return "module" }
+func (a *ArgsModuleObject) Inspect() string { return "<module:args>" }
+
+var argsModuleSingleton = &ArgsModuleObject{}
 
 // TimeModuleObject is the singleton `time` module.
 type TimeModuleObject struct{}
@@ -217,6 +226,42 @@ func (i *Interpreter) evalFsModuleMethod(prop string) Object {
 				absPath := interp.fsResolve(path)
 				_, err := os.Stat(absPath)
 				return nativeBoolToObject(err == nil)
+
+			case "is_dir":
+				if len(args) < 1 {
+					return FALSE_OBJ
+				}
+				path := args[0].Inspect()
+				absPath := interp.fsResolve(path)
+				info, err := os.Stat(absPath)
+				if err != nil {
+					return FALSE_OBJ
+				}
+				return nativeBoolToObject(info.IsDir())
+
+			case "is_file":
+				if len(args) < 1 {
+					return FALSE_OBJ
+				}
+				path := args[0].Inspect()
+				absPath := interp.fsResolve(path)
+				info, err := os.Stat(absPath)
+				if err != nil {
+					return FALSE_OBJ
+				}
+				return nativeBoolToObject(!info.IsDir())
+
+			case "mime_type":
+				if len(args) < 1 {
+					return &StringObject{Value: "application/octet-stream"}
+				}
+				path := args[0].Inspect()
+				ext := filepath.Ext(path)
+				mimeType := mime.TypeByExtension(ext)
+				if mimeType == "" {
+					mimeType = "application/octet-stream"
+				}
+				return &StringObject{Value: mimeType}
 
 			case "delete":
 				if len(args) < 1 {
@@ -922,6 +967,65 @@ func (i *Interpreter) evalEnvModuleMethod(prop string) Object {
 					}
 				}
 				return &NumberObject{Value: float64(count)}
+			}
+			return NULL_OBJ
+		},
+	}
+}
+
+// ============================================================
+// args module methods
+// ============================================================
+
+func (i *Interpreter) evalArgsModuleMethod(prop string) Object {
+	return &BuiltinFunction{
+		Name: "args." + prop,
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			switch prop {
+			case "all":
+				// Return all command-line arguments as a list
+				result := make([]Object, 0)
+				if len(os.Args) > 1 {
+					for _, arg := range os.Args[1:] {
+						result = append(result, &StringObject{Value: arg})
+					}
+				}
+				return &ListObject{Elements: result}
+
+			case "get":
+				// args.get(index, default?) - get argument by index
+				if len(args) < 1 {
+					return NULL_OBJ
+				}
+				idxObj, ok := args[0].(*NumberObject)
+				if !ok {
+					return NULL_OBJ
+				}
+				idx := int(idxObj.Value)
+				if idx < 0 || idx >= len(os.Args)-1 {
+					if len(args) >= 2 {
+						return args[1] // return default value
+					}
+					return NULL_OBJ
+				}
+				return &StringObject{Value: os.Args[idx+1]} // +1 because os.Args[0] is program name
+
+			case "has":
+				// args.has(value) - check if argument exists
+				if len(args) < 1 {
+					return FALSE_OBJ
+				}
+				search := args[0].Inspect()
+				for _, arg := range os.Args[1:] {
+					if arg == search {
+						return TRUE_OBJ
+					}
+				}
+				return FALSE_OBJ
+
+			case "len":
+				// args.len() - number of arguments
+				return &NumberObject{Value: float64(len(os.Args) - 1)}
 			}
 			return NULL_OBJ
 		},

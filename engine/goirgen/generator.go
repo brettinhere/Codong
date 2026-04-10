@@ -34,10 +34,10 @@ func Generate(program *parser.Program, sourceDirs ...string) string {
 	g.output.WriteString(RuntimeSource)
 	g.output.WriteString("\n\nfunc main() {\n")
 	g.indent = 1
-	// Set working directory to source file's directory
+	// Set cFsWorkDir to source file's directory for relative path resolution
+	// But do NOT chdir - keep the original working directory for fs.cwd()
 	if srcDir != "" {
 		g.write(fmt.Sprintf("cFsWorkDir = %q", srcDir))
-		g.write(fmt.Sprintf("os.Chdir(%q)", srcDir))
 	}
 	// Recover unhandled ? propagation
 	g.write("defer func() {")
@@ -782,6 +782,8 @@ func (g *Generator) genIdentifier(name string) string {
 		return "cToFloat"
 	case "str":
 		return "cToStr"
+	case "chr":
+		return "cChr"
 	case "bool":
 		return "cToBool"
 	case "len":
@@ -893,6 +895,8 @@ func (g *Generator) genCall(e *parser.CallExpression) string {
 		if len(args) > 0 { return fmt.Sprintf("cToFloat(%s)", args[0]) }
 	case "cToStr":
 		if len(args) > 0 { return fmt.Sprintf("cToStr(%s)", args[0]) }
+	case "cChr":
+		if len(args) > 0 { return fmt.Sprintf("cChr(%s)", args[0]) }
 	case "cToBool":
 		if len(args) > 0 { return fmt.Sprintf("cToBool(%s)", args[0]) }
 	case "cLen":
@@ -950,6 +954,8 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 			return g.genJsonCall(method, args, named)
 		case "env":
 			return g.genEnvCall(method, args, named)
+		case "args":
+			return g.genArgsCall(method, args, named)
 		case "time":
 			return g.genTimeCall(method, args, named)
 		case "redis":
@@ -958,6 +964,8 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 			return g.genImageCall(method, args, named)
 		case "oauth":
 			return g.genOAuthCall(method, args, named)
+		case "encoding":
+			return g.genEncodingCall(method, args, named)
 		}
 	}
 
@@ -996,6 +1004,8 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 	case "get", "post", "put", "delete", "patch":
 		goMethod := strings.ToUpper(method)
 		return fmt.Sprintf("cWebRoute(\"%s\", %s, %s)", goMethod, args[0], args[1])
+	case "catch_all":
+		return fmt.Sprintf("cWebCatchAll(%s)", args[0])
 	case "serve":
 		port := "8080"
 		if len(args) > 0 {
@@ -1639,6 +1649,21 @@ func (g *Generator) genEnvCall(method string, args []string, named map[string]pa
 	return "nil"
 }
 
+func (g *Generator) genArgsCall(method string, args []string, named map[string]parser.Expression) string {
+	allArgs := strings.Join(args, ", ")
+	switch method {
+	case "all":
+		return "cArgsAll()"
+	case "get":
+		return fmt.Sprintf("cArgsGet(%s)", allArgs)
+	case "has":
+		return fmt.Sprintf("cArgsHas(%s)", allArgs)
+	case "len":
+		return "cArgsLen()"
+	}
+	return "nil"
+}
+
 func (g *Generator) genTimeCall(method string, args []string, named map[string]parser.Expression) string {
 	allArgs := strings.Join(args, ", ")
 	switch method {
@@ -1676,6 +1701,17 @@ func (g *Generator) genTimeCall(method string, args []string, named map[string]p
 		return "cTimeTodayStart()"
 	case "today_end":
 		return "cTimeTodayEnd()"
+	}
+	return "nil"
+}
+
+func (g *Generator) genEncodingCall(method string, args []string, named map[string]parser.Expression) string {
+	allArgs := strings.Join(args, ", ")
+	switch method {
+	case "base64_decode":
+		return fmt.Sprintf("cEncodingBase64Decode(%s)", allArgs)
+	case "base64_encode":
+		return fmt.Sprintf("cEncodingBase64Encode(%s)", allArgs)
 	}
 	return "nil"
 }

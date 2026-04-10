@@ -416,9 +416,11 @@ func (l *Lexer) readString() string {
 		if l.ch == '\\' {
 			// \{ and \} produce literal braces (not interpolation)
 			if l.peekChar() == '{' || l.peekChar() == '}' {
+				nextCh := l.peekChar() // save the next character
 				l.readChar() // consume '\'
-				result = append(result, l.ch)
-				l.readChar()
+				result = append(result, '\\') // append '\'
+				result = append(result, nextCh) // append the brace itself
+				l.readChar() // consume the brace
 				continue
 			}
 			result = append(result, l.readEscape()...)

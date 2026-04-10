@@ -61,6 +61,7 @@ var defaultMIMETypes = map[string]string{
 type WebModuleObject struct {
 	mu          sync.Mutex
 	routes      []webRoute
+	catchAll    *webRoute // catch-all handler for unmatched routes
 	middlewares []Object
 	mux         *http.ServeMux // shared mux for dynamic route adding
 	interp      *Interpreter
@@ -104,6 +105,8 @@ func (interp *Interpreter) evalWebModuleMethod(method string) Object {
 			switch method {
 			case "get", "post", "put", "delete", "patch":
 				return i.webRegisterRoute(strings.ToUpper(method), args)
+			case "catch_all":
+				return i.webRegisterCatchAll(args)
 			case "serve":
 				return i.webServe(args)
 			case "json":
@@ -174,6 +177,24 @@ func (i *Interpreter) webRegisterRoute(method string, args []Object) Object {
 	return NULL_OBJ
 }
 
+// webRegisterCatchAll registers a catch-all handler for unmatched routes.
+func (i *Interpreter) webRegisterCatchAll(args []Object) Object {
+	if len(args) < 1 {
+		return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT,
+			"web.catch_all requires (handler)",
+			"web.catch_all(fn(req) { return web.json({ok: true}) })")
+	}
+	handler := args[0]
+	webModuleSingleton.mu.Lock()
+	defer webModuleSingleton.mu.Unlock()
+	webModuleSingleton.catchAll = &webRoute{
+		method:  "GET", // catch-all handles GET requests by default
+		pattern: "/{path...}",  // Go 1.22+ wildcard syntax
+		handler: handler,
+	}
+	return NULL_OBJ
+}
+
 // webServe creates a server object. The server starts listening in WaitForServers()
 // so routes can be registered after web.serve() returns.
 func (i *Interpreter) webServe(args []Object) Object {
@@ -217,10 +238,8 @@ func (i *Interpreter) codongHandlerToHTTP(handler Object, pattern string) http.H
 
 		// Serialize interpreter access
 		i.mu.Lock()
-		env := NewEnvironment()
 		result := i.applyFunction(handler, []Object{reqMap})
 		i.mu.Unlock()
-		_ = env
 
 		// Write response
 		i.writeHTTPResponse(w, result)
@@ -238,7 +257,27 @@ func (i *Interpreter) buildRequestObject(r *http.Request, pattern string) *MapOb
 	}
 
 	add("method", &StringObject{Value: r.Method})
-	add("path", &StringObject{Value: r.URL.Path})
+
+	// For catch-all routes (/{path...}), use the wildcard value
+	// Go 1.22+ stores the wildcard path in the "path" parameter
+	path := r.URL.Path
+	if strings.Contains(pattern, "{") {
+		// Extract the wildcard path from the pattern
+		wildcardPath := r.PathValue("path")
+		if wildcardPath != "" {
+			// Reconstruct the full path: prefix + wildcard
+			patternPrefix := strings.Split(pattern, "{")[0]
+			// patternPrefix will be "/" for "/{path...}", so we need to handle it
+			if patternPrefix == "/" {
+				path = "/" + wildcardPath
+			} else if patternPrefix != "" {
+				path = patternPrefix + "/" + wildcardPath
+			} else {
+				path = "/" + wildcardPath
+			}
+		}
+	}
+	add("path", &StringObject{Value: path})
 	add("url", &StringObject{Value: r.URL.String()})
 
 	// Query parameters
@@ -859,11 +898,28 @@ func (i *Interpreter) WaitForServers() {
 	webModuleSingleton.mu.Lock()
 	routes := make([]webRoute, len(webModuleSingleton.routes))
 	copy(routes, webModuleSingleton.routes)
+	catchAll := webModuleSingleton.catchAll
 	webModuleSingleton.mu.Unlock()
 
 	for _, srv := range servers {
 		mux := http.NewServeMux()
+		
+		// Register catch-all handler FIRST (before specific routes)
+		// This way, specific routes will take precedence
+		if catchAll != nil {
+			// Register for all HTTP methods using wildcard syntax
+			mux.HandleFunc("GET /{path...}", i.codongHandlerToHTTP(catchAll.handler, catchAll.pattern))
+			mux.HandleFunc("POST /{path...}", i.codongHandlerToHTTP(catchAll.handler, catchAll.pattern))
+			mux.HandleFunc("PUT /{path...}", i.codongHandlerToHTTP(catchAll.handler, catchAll.pattern))
+			mux.HandleFunc("DELETE /{path...}", i.codongHandlerToHTTP(catchAll.handler, catchAll.pattern))
+			mux.HandleFunc("PATCH /{path...}", i.codongHandlerToHTTP(catchAll.handler, catchAll.pattern))
+		}
+		
 		for _, r := range routes {
+			// Skip "/" route if catchAll is registered (catchAll will handle it)
+			if catchAll != nil && r.pattern == "/" {
+				continue
+			}
 			pattern := fmt.Sprintf("%s %s", r.method, r.pattern)
 			handler := r.handler
 			routePattern := r.pattern

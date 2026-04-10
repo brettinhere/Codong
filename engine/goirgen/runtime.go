@@ -389,6 +389,35 @@ func cToStr(v Value) Value {
 	return toString(v)
 }
 
+func cChr(v Value) Value {
+	if n, ok := v.(float64); ok {
+		if n >= 0 && n <= 255 {
+			return string(rune(int(n)))
+		}
+		return ""
+	}
+	return ""
+}
+
+func cEncodingBase64Decode(v Value) Value {
+	if s, ok := v.(string); ok {
+		decoded, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return ""
+		}
+		return string(decoded)
+	}
+	return ""
+}
+
+func cEncodingBase64Encode(v Value) Value {
+	if s, ok := v.(string); ok {
+		encoded := base64.StdEncoding.EncodeToString([]byte(s))
+		return encoded
+	}
+	return ""
+}
+
 func cToBool(v Value) Value {
 	if v == nil { return false }
 	switch s := v.(type) {
@@ -1140,6 +1169,14 @@ type cSessionContext struct {
 }
 var cCurrentSession *cSessionContext
 
+// cWebCatchAll registers a catch-all handler for all unmatched routes
+var cWebCatchAllHandler func(...Value) Value
+
+func cWebCatchAll(handler Value) Value {
+	cWebCatchAllHandler = handler.(func(...Value) Value)
+	return nil
+}
+
 func cWebRoute(method string, pattern Value, handler Value) Value {
 	p := toString(pattern)
 	// Convert :param to {param}
@@ -1265,6 +1302,72 @@ func cWebServe(port int) Value {
 			writeResponse(w, req, result)
 		})
 	}
+	
+	// Register catch-all handler (after specific routes, so it only catches unmatched)
+	if cWebCatchAllHandler != nil {
+		catchHandler := cWebCatchAllHandler
+		mux.HandleFunc("GET /{path...}", func(w http.ResponseWriter, req *http.Request) {
+			reqMap := cMap(
+				"method", req.Method,
+				"path", req.URL.Path,
+				"url", req.URL.String(),
+			)
+			// Parse query
+			qm := cMap()
+			for k, v := range req.URL.Query() { cSet(qm, k, v[0]) }
+			cSet(reqMap, "query", qm)
+			// Parse params
+			pm := cMap()
+			cSet(reqMap, "param", pm)
+			// Parse headers
+			hm := cMap()
+			for k, v := range req.Header {
+				cSet(hm, k, v[0])
+				cSet(hm, strings.ToLower(k), v[0])
+			}
+			cSet(reqMap, "headers", hm)
+			cSet(reqMap, "header", func(args ...Value) Value {
+				if len(args) > 0 { if v, ok := hm.Entries[strings.ToLower(toString(args[0]))]; ok { return v } }
+				return nil
+			})
+			// Cookies
+			cm := cMap()
+			for _, c := range req.Cookies() { cSet(cm, c.Name, c.Value) }
+			cSet(reqMap, "cookies", cm)
+			cSet(reqMap, "cookie", func(args ...Value) Value {
+				if len(args) > 0 { if v, ok := cm.Entries[toString(args[0])]; ok { return v } }
+				return nil
+			})
+			// Client IP
+			ip := req.RemoteAddr
+			if fwd := req.Header.Get("X-Forwarded-For"); fwd != "" { ip = fwd }
+			cSet(reqMap, "ip", ip)
+			// Context
+			ctxMap := cMap()
+			cSet(reqMap, "context", ctxMap)
+			// query_all()
+			cSet(reqMap, "query_all", func(args ...Value) Value { return qm })
+			// Parse body
+			contentType := req.Header.Get("Content-Type")
+			if strings.HasPrefix(contentType, "multipart/form-data") {
+				cParseMultipartBody(req, reqMap)
+			} else if req.Body != nil {
+				bodyBytes, _ := io.ReadAll(req.Body)
+				if len(bodyBytes) > 0 {
+					var jdata interface{}
+					if json.Unmarshal(bodyBytes, &jdata) == nil {
+						cSet(reqMap, "body", goToValue(jdata))
+					} else {
+						cSet(reqMap, "body", string(bodyBytes))
+					}
+				}
+			}
+			// Call handler
+			result := catchHandler(reqMap)
+			writeResponse(w, req, result)
+		})
+	}
+	
 	// Register WebSocket routes
 	for _, ws := range cWebWSRoutes {
 		wsHandler := ws.handler
@@ -1439,7 +1542,20 @@ func cWebServe(port int) Value {
 		defer cancel()
 		server.Shutdown(ctx)
 	}()
-	server.ListenAndServe()
+	err := server.ListenAndServe()
+	if err != nil {
+		if err == http.ErrServerClosed {
+			// Normal shutdown, exit cleanly
+			return nil
+		}
+		if strings.Contains(err.Error(), "address already in use") || strings.Contains(err.Error(), "bind: address already in use") {
+			fmt.Fprintf(os.Stderr, "[E9001_PORT_IN_USE] Port %d is already in use\n", port)
+			fmt.Fprintf(os.Stderr, "  fix: stop the process using port %d or use a different port\n", port)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "[E9002_SERVER_ERROR] Server error: %v\n", err)
+		os.Exit(1)
+	}
 	return nil
 }
 
@@ -3356,7 +3472,8 @@ func cFsJoin(args ...Value) Value {
 }
 
 func cFsCwd(args ...Value) Value {
-	return filepath.ToSlash(cFsWorkDir)
+	cwd, _ := os.Getwd()
+	return filepath.ToSlash(cwd)
 }
 
 func cFsBasename(args ...Value) Value {
@@ -3635,6 +3752,46 @@ func cJsonUnflatten(args ...Value) Value {
 // ============================================================
 // env module runtime functions
 // ============================================================
+
+// cArgsAll returns all command-line arguments (excluding program name).
+func cArgsAll(args ...Value) Value {
+	// os.Args[0] is the program name, skip it
+	m := &CodongList{Elements: []Value{}}
+	if len(os.Args) > 1 {
+		for _, arg := range os.Args[1:] {
+			m.Elements = append(m.Elements, arg)
+		}
+	}
+	return m
+}
+
+// cArgsGet returns a specific command-line argument by index.
+func cArgsGet(args ...Value) Value {
+	if len(args) < 1 { return nil }
+	idx, ok := args[0].(int)
+	if !ok || idx < 0 || idx >= len(os.Args)-1 {
+		if len(args) >= 2 { return args[1] } // default value
+		return nil
+	}
+	return os.Args[idx+1] // +1 because os.Args[0] is program name
+}
+
+// cArgsHas checks if a specific argument exists.
+func cArgsHas(args ...Value) Value {
+	if len(args) < 1 { return false }
+	search := toString(args[0])
+	for _, arg := range os.Args[1:] {
+		if arg == search {
+			return true
+		}
+	}
+	return false
+}
+
+// cArgsLen returns the number of command-line arguments.
+func cArgsLen(args ...Value) Value {
+	return len(os.Args) - 1
+}
 
 func cEnvSet(args ...Value) Value {
 	if len(args) < 2 { return nil }

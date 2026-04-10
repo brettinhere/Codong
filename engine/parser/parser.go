@@ -707,8 +707,20 @@ func (p *Parser) parseNumberLiteral() Expression {
 
 func (p *Parser) parseStringLiteral() Expression {
 	raw := p.curToken.Literal
-	// Check for interpolation: contains { and }
-	if strings.Contains(raw, "{") && strings.Contains(raw, "}") {
+	// Check for unescaped { and } for interpolation (skip \{ and \})
+	hasUnescapedBraces := false
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '\\' {
+			i++ // skip next char
+			continue
+		}
+		if raw[i] == '{' || raw[i] == '}' {
+			hasUnescapedBraces = true
+			break
+		}
+	}
+
+	if hasUnescapedBraces {
 		// Skip interpolation if it looks like a JSON literal:
 		// JSON pattern: {"key": value} — after the string key there's a colon
 		braceIdx := strings.Index(raw, "{")
@@ -731,25 +743,61 @@ func (p *Parser) parseStringLiteral() Expression {
 		}
 		return p.parseInterpolatedString(raw)
 	}
-	return &StringLiteral{Token: p.curToken, Value: raw}
+	return &StringLiteral{Token: p.curToken, Value: unescapeBraces(raw)}
+}
+
+// unescapeBraces removes backslashes from \{ and \} escape sequences.
+func unescapeBraces(s string) string {
+	var result []byte
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) && (s[i+1] == '{' || s[i+1] == '}') {
+			result = append(result, s[i+1]) // skip backslash, keep brace
+			i++
+		} else {
+			result = append(result, s[i])
+		}
+	}
+	return string(result)
 }
 
 func (p *Parser) parseInterpolatedString(raw string) Expression {
 	interp := &StringInterpolation{Token: p.curToken}
 	i := 0
 	for i < len(raw) {
-		braceIdx := strings.Index(raw[i:], "{")
+		// Find unescaped {
+		braceIdx := -1
+		for j := i; j < len(raw); j++ {
+			if raw[j] == '\\' && j+1 < len(raw) {
+				j++ // skip escaped char
+				continue
+			}
+			if raw[j] == '{' {
+				braceIdx = j - i
+				break
+			}
+		}
 		if braceIdx == -1 {
-			interp.Parts = append(interp.Parts, &StringLiteral{Token: p.curToken, Value: raw[i:]})
+			interp.Parts = append(interp.Parts, &StringLiteral{Token: p.curToken, Value: unescapeBraces(raw[i:])})
 			break
 		}
 		if braceIdx > 0 {
-			interp.Parts = append(interp.Parts, &StringLiteral{Token: p.curToken, Value: raw[i : i+braceIdx]})
+			interp.Parts = append(interp.Parts, &StringLiteral{Token: p.curToken, Value: unescapeBraces(raw[i : i+braceIdx])})
 		}
 		i += braceIdx + 1
-		endBrace := strings.Index(raw[i:], "}")
+		// Find unescaped }
+		endBrace := -1
+		for j := i; j < len(raw); j++ {
+			if raw[j] == '\\' && j+1 < len(raw) {
+				j++ // skip escaped char
+				continue
+			}
+			if raw[j] == '}' {
+				endBrace = j - i
+				break
+			}
+		}
 		if endBrace == -1 {
-			interp.Parts = append(interp.Parts, &StringLiteral{Token: p.curToken, Value: raw[i:]})
+			interp.Parts = append(interp.Parts, &StringLiteral{Token: p.curToken, Value: unescapeBraces(raw[i:])})
 			break
 		}
 		exprStr := raw[i : i+endBrace]

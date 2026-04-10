@@ -826,6 +826,9 @@ func (i *Interpreter) evalIdentifier(node *parser.Identifier, env *Environment) 
 	if node.Value == "env" {
 		return envModuleSingleton
 	}
+	if node.Value == "args" {
+		return argsModuleSingleton
+	}
 	if node.Value == "time" {
 		return timeModuleSingleton
 	}
@@ -837,6 +840,9 @@ func (i *Interpreter) evalIdentifier(node *parser.Identifier, env *Environment) 
 	}
 	if node.Value == "oauth" {
 		return oauthModuleSingleton
+	}
+	if node.Value == "encoding" {
+		return encodingModuleSingleton
 	}
 	// Check built-in functions
 	if builtin, ok := builtins[node.Value]; ok {
@@ -1082,6 +1088,11 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 		return i.evalEnvModuleMethod(prop)
 	}
 
+	// args module methods: args.get(), args.all(), etc.
+	if _, ok := obj.(*ArgsModuleObject); ok {
+		return i.evalArgsModuleMethod(prop)
+	}
+
 	// time module methods: time.now(), time.sleep(), etc.
 	if _, ok := obj.(*TimeModuleObject); ok {
 		return i.evalTimeModuleMethod(prop)
@@ -1095,6 +1106,11 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 	// image module methods: image.open(), image.info(), etc.
 	if _, ok := obj.(*ImageModuleObject); ok {
 		return i.evalImageModuleMethod(prop)
+	}
+
+	// encoding module methods: encoding.base64_decode(), encoding.base64_encode(), etc.
+	if _, ok := obj.(*EncodingModuleObject); ok {
+		return i.evalEncodingModuleMethod(prop)
 	}
 
 	// image object methods: img.resize(), img.save(), etc.
@@ -2085,6 +2101,22 @@ func init() {
 		Fn: func(interp *Interpreter, args ...Object) Object {
 			if len(args) > 0 {
 				return &StringObject{Value: args[0].Type()}
+			}
+			return NULL_OBJ
+		},
+	},
+	"chr": {
+		Name: "chr",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			if len(args) < 1 {
+				return NULL_OBJ
+			}
+			switch v := args[0].(type) {
+			case *NumberObject:
+				if v.Value >= 0 && v.Value <= 255 {
+					return &StringObject{Value: string(rune(int(v.Value)))}
+				}
+				return NULL_OBJ
 			}
 			return NULL_OBJ
 		},

@@ -1,0 +1,119 @@
+// encoding 模块示例 - Base64 编解码
+// 演示如何使用 encoding.base64_encode() 和 encoding.base64_decode()
+
+// ============================================
+// 基础用法
+// ============================================
+
+// 1. 编码字符串
+original = "Hello, Codong!"
+encoded = encoding.base64_encode(original)
+print("原文：{original}")
+print("Base64 编码：{encoded}")
+
+// 2. 解码字符串
+decoded = encoding.base64_decode(encoded)
+print("解码后：{decoded}")
+
+// 3. 验证编解码正确性
+if original == decoded {
+    print("✓ 编解码测试通过！")
+} else {
+    print("✗ 编解码测试失败！")
+}
+
+print("")
+
+// ============================================
+// 实际应用场景
+// ============================================
+
+// 场景 1: 在 URL 中安全传输特殊字符
+special_text = "用户名=admin&密码=123456"
+safe_for_url = encoding.base64_encode(special_text)
+print("场景 1: URL 安全传输")
+print("  原始数据：{special_text}")
+print("  URL 安全：{safe_for_url}")
+print("")
+
+// 场景 2: 存储二进制数据为文本（如图片转 Base64）
+// 模拟一个简单的图片标识
+image_marker = "PNG_IMAGE_DATA_PLACEHOLDER"
+image_base64 = encoding.base64_encode(image_marker)
+print("场景 2: 图片数据编码")
+print("  图片标识：{image_marker}")
+print("  Base64: {image_base64}")
+print("")
+
+// 场景 3: 简单数据混淆（非加密，仅隐藏明文）
+sensitive = "API_KEY_12345"
+obfuscated = encoding.base64_encode(sensitive)
+print("场景 3: 数据混淆")
+print("  敏感数据：{sensitive}")
+print("  混淆后：{obfuscated}")
+print("  恢复：{encoding.base64_decode(obfuscated)}")
+print("")
+
+// ============================================
+// 编解码函数封装
+// ============================================
+
+// 封装一个可复用的编码函数
+fn encode_data(text) {
+    return encoding.base64_encode(text)
+}
+
+// 封装一个可复用的解码函数
+fn decode_data(base64_str) {
+    return encoding.base64_decode(base64_str)
+}
+
+// 测试封装函数
+test_data = "测试数据 123"
+encoded_test = encode_data(test_data)
+decoded_test = decode_data(encoded_test)
+
+print("封装函数测试:")
+print("  输入：{test_data}")
+print("  编码：{encoded_test}")
+print("  解码：{decoded_test}")
+
+if test_data == decoded_test {
+    print("  ✓ 封装函数测试通过！")
+}
+
+print("")
+
+// ============================================
+// 边界情况处理
+// ============================================
+
+print("边界情况测试:")
+
+// 空字符串
+empty = ""
+empty_encoded = encoding.base64_encode(empty)
+empty_decoded = encoding.base64_decode(empty_encoded)
+print("  空字符串编码：'{empty_encoded}' (长度：{empty_encoded.len()})")
+
+// 包含中文
+chinese = "你好，世界！"
+chinese_encoded = encoding.base64_encode(chinese)
+chinese_decoded = encoding.base64_decode(chinese_encoded)
+print("  中文编码：{chinese_encoded}")
+print("  中文解码：{chinese_decoded}")
+if chinese == chinese_decoded {
+    print("  ✓ 中文测试通过！")
+}
+
+// 包含特殊字符
+special = "!@#$%^&*()_+-=[]{}|;':\",./<>?"
+special_encoded = encoding.base64_encode(special)
+special_decoded = encoding.base64_decode(special_encoded)
+print("  特殊字符编码：{special_encoded}")
+if special == special_decoded {
+    print("  ✓ 特殊字符测试通过！")
+}
+
+print("")
+print("=== 所有测试完成 ===")
