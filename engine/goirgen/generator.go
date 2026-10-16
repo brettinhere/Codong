@@ -21,6 +21,9 @@ type Generator struct {
 	tcCounter   int             // unique counter for try/catch flow control variables
 	sourceDir   string          // directory of the main .cod file (for resolving imports)
 	imported    map[string]bool // tracks already imported files to prevent cycles
+	usedModules map[string]bool // set of built-in module names referenced by the program (e.g. "web", "db")
+	dbSchemes   map[string]bool // database schemes statically detected via db.connect literals ("mysql"/"postgres"/"sqlite")
+	dbDynamicDSN bool           // true if any db.connect uses a non-literal DSN (forces linking all drivers)
 }
 
 // Generate produces a complete Go program from a Codong AST.
@@ -30,8 +33,10 @@ func Generate(program *parser.Program, sourceDirs ...string) string {
 	if len(sourceDirs) > 0 {
 		srcDir = sourceDirs[0]
 	}
-	g := &Generator{declared: map[string]bool{}, consts: map[string]bool{}, sourceDir: srcDir, imported: map[string]bool{}}
-	g.output.WriteString(RuntimeSource)
+	g := &Generator{declared: map[string]bool{}, consts: map[string]bool{}, sourceDir: srcDir, imported: map[string]bool{}, usedModules: map[string]bool{}, dbSchemes: map[string]bool{}}
+	// Pre-pass: scan the AST to discover which built-in modules are referenced,
+	// so the runtime can be assembled using only the fragments the program needs.
+	g.scanUsedModules(program)
 	g.output.WriteString("\n\nfunc main() {\n")
 	g.indent = 1
 	// Set cFsWorkDir to source file's directory for relative path resolution
@@ -112,9 +117,22 @@ func Generate(program *parser.Program, sourceDirs ...string) string {
 			g.genStatement(stmt)
 		}
 	}
-	// Start web servers after all routes are registered
-	g.write("cWebServeAll()")
+	// Start web servers after all routes are registered (only if web module is used)
+	if g.usedModules["web"] {
+		g.write("cWebServeAll()")
+	}
 	g.output.WriteString("}\n")
+
+	// Assemble the runtime prefix (package decl, imports, fragments, keep-alive)
+	// AFTER code generation: genMethodCall/genMemberAccess also record module
+	// usage while generating, which catches modules referenced only inside
+	// imported files that the pre-pass walker never sees. The generated body
+	// is buffered, the prefix is emitted into the reset builder, then the
+	// body is appended so the final file order is prefix + body.
+	body := g.output.String()
+	g.output.Reset()
+	g.emitRuntime()
+	g.output.WriteString(body)
 	return g.output.String()
 }
 
@@ -947,6 +965,9 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 
 	// Module-level calls
 	if ident, ok := member.Object.(*parser.Identifier); ok {
+		if astModuleNames[ident.Value] {
+			g.usedModules[ident.Value] = true
+		}
 		switch ident.Value {
 		case "web":
 			return g.genWebCall(method, args, named)
@@ -1812,6 +1833,9 @@ func (g *Generator) genStringInterp(e *parser.StringInterpolation) string {
 func (g *Generator) genMemberAccess(e *parser.MemberAccessExpression) string {
 	// Module member access without call (e.g., web.json as reference)
 	if ident, ok := e.Object.(*parser.Identifier); ok {
+		if astModuleNames[ident.Value] {
+			g.usedModules[ident.Value] = true
+		}
 		switch ident.Value {
 		case "web":
 			switch e.Property.Value {
@@ -1838,3 +1862,521 @@ func (g *Generator) genParams(params []*parser.TypedIdentifier) []string {
 	}
 	return names
 }
+
+// ----------------------------------------------------------------------------
+// Minimal-runtime assembly (AST-driven, per-module emission)
+// ----------------------------------------------------------------------------
+
+// runtimeModule describes one of the per-module runtime fragments split out of
+// the original monolithic RuntimeSource. The fragments are concatenated by
+// emitRuntime() based on which built-in modules the source program actually
+// uses, so unused modules (and their heavy Go dependencies) never reach the
+// final binary.
+type runtimeModule struct {
+	Name      string // PascalCase name used in const Runtime{Name}
+	Imports   string // raw Go import block lines (each line is one import clause, e.g. `_ "pkg/foo"`)
+	KeepAlive string // raw Go source lines, each a `var _ = <symbol>` statement (or empty)
+}
+
+// allRuntimeModules lists every per-module runtime fragment in a stable,
+// dependency-friendly order.
+//
+// The heavy modules are gated on usedModules — these pull in large external
+// dependencies, so omitting them yields the largest binary-size win for
+// programs that don't use them:
+//
+//   - Web    -> net/http + mime/multipart + os/signal (~1 MB)
+//   - Image  -> image/* + x/image/{bmp,tiff,webp} (~1 MB)
+//   - Http   -> net/http client (~500 KB)
+//   - Llm    -> net/http + encoding/json client (~200 KB)
+//   - DB     -> database/sql + mysql/pq/sqlite drivers (~1 MB+)
+//   - Redis  -> goredis client + connection pool (~1 MB)
+//   - OAuth  -> crypto/hmac, crypto/sha256, crypto/rand, base64, hex (~500 KB)
+//
+// When Web/Image are omitted, cross-module stubs declared in Core (stripped
+// via __GIRGEN_STRIP_*_STUBS markers when the real fragment is emitted) keep
+// core's cCall dispatch compilable.
+//
+// Each Imports entry is a raw Go import clause (one per line, no surrounding
+// quotes), and each KeepAlive entry is a raw `var _ = <symbol>` Go line.
+var allRuntimeModules = []runtimeModule{
+	{"Core", CoreImports, wrapKeepAlive(CoreKeepAlive)},
+	{"Builtin", BuiltinImports, wrapKeepAlive(BuiltinKeepAlive)},
+	{"Web", WebImports, wrapKeepAlive(WebKeepAlive)},
+	{"Image", ImageImports, wrapKeepAlive(ImageKeepAlive)},
+	{"Http", HttpImports, wrapKeepAlive(HttpKeepAlive)},
+	{"ErrorExtended", ErrorExtendedImports, wrapKeepAlive(ErrorExtendedKeepAlive)},
+	{"Llm", LlmImports, wrapKeepAlive(LlmKeepAlive)},
+	{"Fs", FsImports, wrapKeepAlive(FsKeepAlive)},
+	{"Json", JsonImports, wrapKeepAlive(JsonKeepAlive)},
+	{"Env", EnvImports, wrapKeepAlive(EnvKeepAlive)},
+	{"Time", TimeImports, wrapKeepAlive(TimeKeepAlive)},
+	{"DB", DBImportsCore, wrapKeepAlive(DBKeepAlive)},          // conditional; driver imports emitted dynamically
+	{"Redis", RedisImports, wrapKeepAlive(RedisKeepAlive)},  // conditional
+	{"OAuth", OAuthImports, wrapKeepAlive(OAuthKeepAlive)},  // conditional
+}
+
+// wrapKeepAlive converts a raw KeepAlive body (one symbol per line, with
+// leading tab) into a string of `var _ = <symbol>` lines that can be emitted
+// verbatim into the generated main package.
+func wrapKeepAlive(body string) string {
+	if body == "" {
+		return ""
+	}
+	var sb strings.Builder
+	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+		sym := strings.TrimSpace(line)
+		if sym == "" {
+			continue
+		}
+		sb.WriteString("var _ = ")
+		sb.WriteString(sym)
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// astModuleToRuntime maps a built-in module name as it appears in a Codong
+// source file (e.g. "web", "fs", "db") to the PascalCase runtime module that
+// implements it. Multiple AST modules can map to the same runtime (e.g. "env"
+// and "args" both live in the Env fragment).
+var astModuleToRuntime = map[string]string{
+	"web":      "Web",
+	"db":       "DB",
+	"http":     "Http",
+	"error":    "ErrorExtended",
+	"llm":      "Llm",
+	"fs":       "Fs",
+	"json":     "Json",
+	"env":      "Env",
+	"args":     "Env",
+	"time":     "Time",
+	"redis":    "Redis",
+	"image":    "Image",
+	"oauth":    "OAuth",
+	"encoding": "Core", // cEncodingBase64* live in the always-on core
+}
+
+// astModuleNames is the set of built-in module names we recognise in the AST.
+// Used by the pre-pass walker to filter out user-defined identifiers that
+// happen to share a name with a built-in module.
+var astModuleNames = map[string]bool{
+	"web": true, "db": true, "http": true, "error": true, "llm": true,
+	"fs": true, "json": true, "env": true, "args": true, "time": true,
+	"redis": true, "image": true, "oauth": true, "encoding": true,
+}
+
+// runtimeFragment returns the Go source text of a runtime module by its
+// PascalCase name. Falls back to the empty string for unknown names.
+func runtimeFragment(name string) string {
+	switch name {
+	case "Core":
+		return RuntimeCore
+	case "Builtin":
+		return RuntimeBuiltin
+	case "Web":
+		return RuntimeWeb
+	case "DB":
+		return RuntimeDB
+	case "Http":
+		return RuntimeHttp
+	case "ErrorExtended":
+		return RuntimeErrorExtended
+	case "Llm":
+		return RuntimeLlm
+	case "Fs":
+		return RuntimeFs
+	case "Json":
+		return RuntimeJson
+	case "Env":
+		return RuntimeEnv
+	case "Time":
+		return RuntimeTime
+	case "Redis":
+		return RuntimeRedis
+	case "Image":
+		return RuntimeImage
+	case "OAuth":
+		return RuntimeOAuth
+	}
+	return ""
+}
+
+// stripStubBlock removes the cross-module stub block delimited by
+// __GIRGEN_STRIP_<name>_STUBS_BEGIN__ and __GIRGEN_STRIP_<name>_STUBS_END__
+// markers from a runtime fragment. Used to avoid duplicate declarations
+// when both core (with stubs) and the real web/image fragments would be
+// emitted.
+func stripStubBlock(s, name string) string {
+	begin := "// __GIRGEN_STRIP_" + name + "_STUBS_BEGIN__"
+	end := "// __GIRGEN_STRIP_" + name + "_STUBS_END__"
+	i := strings.Index(s, begin)
+	if i < 0 {
+		return s
+	}
+	j := strings.Index(s[i+len(begin):], end)
+	if j < 0 {
+		return s
+	}
+	return s[:i] + s[i+len(begin)+j+len(end):]
+}
+
+// alwaysOnModules are the per-module runtime fragments that are always
+// emitted in every Codong program. They cover the core language machinery
+// plus small stdlib-only modules; the heaviest modules (Web, Image, Http,
+// Llm, DB, Redis, OAuth) are gated on usedModules because they pull in
+// large external dependencies (x/image, database drivers, etc.). When
+// these heavy modules are not used, cross-module stubs in Core keep the
+// dispatch code paths compilable.
+var alwaysOnModules = map[string]bool{
+	"Core":          true,
+	"Builtin":       true,
+	"Json":          true,
+	"Env":           true,
+	"Time":          true,
+	"Fs":            true,
+	"ErrorExtended": true,
+}
+
+// shouldIncludeModule returns true if the given runtime module should be
+// emitted in the current program.
+func (g *Generator) shouldIncludeModule(name string) bool {
+	if alwaysOnModules[name] {
+		return true
+	}
+	return astToRuntimeUsed(g.usedModules, name)
+}
+
+// emitRuntime writes the package declaration, dynamically-built import block,
+// concatenated per-module runtime fragments, and a union keep-alive block
+// into g.output. Call this AFTER generating the program body (and after
+// resetting the builder): it reads g.usedModules, populated both by the
+// scanUsedModules pre-pass and by genMethodCall/genMemberAccess during
+// code generation.
+func (g *Generator) emitRuntime() {
+	g.output.WriteString("package main\n\n")
+	g.output.WriteString("import (\n")
+
+	// Collect per-module imports for used runtime modules. Deduplicate
+	// identical import lines and preserve the order in which they first
+	// appear.
+	imports := map[string]bool{}
+	kaParts := []string{}
+	for _, m := range allRuntimeModules {
+		if !g.shouldIncludeModule(m.Name) {
+			continue
+		}
+		if m.Imports != "" {
+			for _, line := range strings.Split(strings.TrimRight(m.Imports, "\n"), "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" {
+					continue
+				}
+				if !imports[trimmed] {
+					imports[trimmed] = true
+					g.output.WriteString("\t")
+					g.output.WriteString(trimmed)
+					g.output.WriteString("\n")
+				}
+			}
+		}
+		// DB driver splitting: emit only the driver(s) the program
+		// statically connects to (or all three when the DSN is dynamic).
+		if m.Name == "DB" {
+			for _, drv := range g.dbDriverImports() {
+				if !imports[drv] {
+					imports[drv] = true
+					g.output.WriteString("\t")
+					g.output.WriteString(drv)
+					g.output.WriteString("\n")
+				}
+			}
+		}
+		if m.KeepAlive != "" {
+			kaParts = append(kaParts, m.KeepAlive)
+		}
+	}
+	g.output.WriteString(")\n\n")
+
+	// Concatenate runtime fragments in stable order.
+	includeWeb := g.shouldIncludeModule("Web")
+	includeImage := g.shouldIncludeModule("Image")
+	for _, m := range allRuntimeModules {
+		if !g.shouldIncludeModule(m.Name) {
+			continue
+		}
+		frag := runtimeFragment(m.Name)
+		// Strip cross-module stubs from core when the corresponding real
+		// fragment is being emitted, so the real declarations don't
+		// conflict with the stubs. Web-stubs and image-stubs are
+		// stripped independently.
+		if m.Name == "Core" {
+			if includeWeb {
+				frag = stripStubBlock(frag, "WEB")
+			}
+			if includeImage {
+				frag = stripStubBlock(frag, "IMAGE")
+			}
+		}
+		g.output.WriteString(frag)
+		g.output.WriteString("\n")
+	}
+
+	// Union keep-alive block.
+	if len(kaParts) > 0 {
+		g.output.WriteString("\n// Keep linker from dropping unused packages:\n")
+		for _, p := range kaParts {
+			g.output.WriteString(p)
+		}
+	}
+}
+
+// astToRuntimeUsed returns true if the runtime module `runtimeName` should be
+// emitted given the set of AST-level modules that the program uses. It checks
+// whether any AST module in the reverse mapping points to runtimeName.
+func astToRuntimeUsed(usedModules map[string]bool, runtimeName string) bool {
+	for astName, rn := range astModuleToRuntime {
+		if rn != runtimeName {
+			continue
+		}
+		if usedModules[astName] {
+			return true
+		}
+	}
+	return false
+}
+
+// scanUsedModules walks the program AST and records which built-in modules
+// (web, db, http, ...) are referenced. The result drives the per-module
+// runtime emission in emitRuntime().
+func (g *Generator) scanUsedModules(program *parser.Program) {
+	if program == nil {
+		return
+	}
+	for _, stmt := range program.Statements {
+		g.scanStmtForModules(stmt)
+	}
+}
+
+func (g *Generator) scanStmtForModules(stmt parser.Statement) {
+	if stmt == nil {
+		return
+	}
+	switch s := stmt.(type) {
+	case *parser.ExpressionStatement:
+		g.scanExprForModules(s.Expression)
+	case *parser.AssignStatement:
+		g.scanExprForModules(s.Value)
+	case *parser.ConstStatement:
+		g.scanExprForModules(s.Value)
+	case *parser.CompoundAssignStatement:
+		g.scanExprForModules(s.Value)
+	case *parser.PropertyAssignStatement:
+		g.scanExprForModules(s.Object)
+		g.scanExprForModules(s.Value)
+	case *parser.IndexAssignStatement:
+		g.scanExprForModules(s.Left)
+		g.scanExprForModules(s.Index)
+		g.scanExprForModules(s.Value)
+	case *parser.ReturnStatement:
+		if s.Value != nil {
+			g.scanExprForModules(s.Value)
+		}
+	case *parser.IfStatement:
+		g.scanExprForModules(s.Condition)
+		if s.Consequence != nil {
+			for _, st := range s.Consequence.Statements {
+				g.scanStmtForModules(st)
+			}
+		}
+		if s.Alternative != nil {
+			g.scanStmtForModules(s.Alternative)
+		}
+	case *parser.ForInStatement:
+		g.scanExprForModules(s.Iterable)
+		if s.Body != nil {
+			for _, st := range s.Body.Statements {
+				g.scanStmtForModules(st)
+			}
+		}
+	case *parser.WhileStatement:
+		g.scanExprForModules(s.Condition)
+		if s.Body != nil {
+			for _, st := range s.Body.Statements {
+				g.scanStmtForModules(st)
+			}
+		}
+	case *parser.MatchStatement:
+		g.scanExprForModules(s.Subject)
+		for _, c := range s.Cases {
+			g.scanExprForModules(c.Pattern)
+			if c.Body != nil {
+				g.scanExprForModules(c.Body)
+			}
+			if c.BodyBlock != nil {
+				for _, st := range c.BodyBlock.Statements {
+					g.scanStmtForModules(st)
+				}
+			}
+		}
+	case *parser.FunctionDefinition:
+		if s.Body != nil {
+			for _, st := range s.Body.Statements {
+				g.scanStmtForModules(st)
+			}
+		}
+	case *parser.TryCatchStatement:
+		if s.Try != nil {
+			for _, st := range s.Try.Statements {
+				g.scanStmtForModules(st)
+			}
+		}
+		if s.Catch != nil {
+			for _, st := range s.Catch.Statements {
+				g.scanStmtForModules(st)
+			}
+		}
+	case *parser.GoStatement:
+		if s.Call != nil {
+			g.scanExprForModules(s.Call)
+		}
+	case *parser.SelectStatement:
+		for _, c := range s.Cases {
+			if c.Channel != nil {
+				g.scanExprForModules(c.Channel)
+			}
+			if c.Body != nil {
+				for _, st := range c.Body.Statements {
+					g.scanStmtForModules(st)
+				}
+			}
+		}
+	case *parser.BlockStatement:
+		for _, st := range s.Statements {
+			g.scanStmtForModules(st)
+		}
+	}
+}
+
+func (g *Generator) scanExprForModules(expr parser.Expression) {
+	if expr == nil {
+		return
+	}
+	switch e := expr.(type) {
+	case *parser.CallExpression:
+		if mae, ok := e.Function.(*parser.MemberAccessExpression); ok {
+			if ident, ok := mae.Object.(*parser.Identifier); ok {
+				if astModuleNames[ident.Value] {
+					g.usedModules[ident.Value] = true
+				}
+				// DB driver splitting: record the scheme of any statically
+				// known db.connect/db.open DSN so only needed drivers link.
+				if ident.Value == "db" && (mae.Property.Value == "connect" || mae.Property.Value == "open") {
+					g.detectDbScheme(e)
+				}
+			}
+		}
+		for _, a := range e.Arguments {
+			g.scanExprForModules(a)
+		}
+		for _, a := range e.Named {
+			g.scanExprForModules(a)
+		}
+	case *parser.MemberAccessExpression:
+		if ident, ok := e.Object.(*parser.Identifier); ok {
+			if astModuleNames[ident.Value] {
+				g.usedModules[ident.Value] = true
+			}
+		}
+		g.scanExprForModules(e.Object)
+	case *parser.IndexExpression:
+		g.scanExprForModules(e.Left)
+		g.scanExprForModules(e.Index)
+	case *parser.InfixExpression:
+		g.scanExprForModules(e.Left)
+		g.scanExprForModules(e.Right)
+	case *parser.PrefixExpression:
+		g.scanExprForModules(e.Right)
+	case *parser.StringInterpolation:
+		for _, p := range e.Parts {
+			g.scanExprForModules(p)
+		}
+	case *parser.ListLiteral:
+		for _, el := range e.Elements {
+			g.scanExprForModules(el)
+		}
+	case *parser.MapLiteral:
+		for _, ent := range e.Entries {
+			g.scanExprForModules(ent.Value)
+		}
+	case *parser.FunctionLiteral:
+		if e.Body != nil {
+			for _, st := range e.Body.Statements {
+				g.scanStmtForModules(st)
+			}
+		}
+		g.scanExprForModules(e.ArrowExpr)
+	case *parser.ErrorPropagationExpression:
+		g.scanExprForModules(e.Expr)
+	}
+}
+
+// detectDbScheme records the database driver scheme for a db.connect/db.open
+// call so the generator can emit only the required driver import. If the DSN
+// is a plain string literal its scheme is parsed and recorded; any other
+// argument shape (variable, interpolation, absent) is conservatively treated
+// as dynamic, which forces all three drivers to be linked.
+func (g *Generator) detectDbScheme(call *parser.CallExpression) {
+	if len(call.Arguments) == 0 {
+		g.dbDynamicDSN = true
+		return
+	}
+	lit, ok := call.Arguments[0].(*parser.StringLiteral)
+	if !ok {
+		g.dbDynamicDSN = true
+		return
+	}
+	if scheme := dbSchemeFromDSN(lit.Value); scheme != "" {
+		g.dbSchemes[scheme] = true
+	} else {
+		g.dbDynamicDSN = true
+	}
+}
+
+// dbSchemeFromDSN maps a DSN string to a driver scheme using the same prefix
+// rules as the runtime db.connect. Returns "" if the scheme is unrecognised.
+func dbSchemeFromDSN(dsn string) string {
+	switch {
+	case strings.HasPrefix(dsn, "mysql://"):
+		return "mysql"
+	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"):
+		return "postgres"
+	case strings.HasPrefix(dsn, "sqlite://"), strings.HasPrefix(dsn, "sqlite:///"),
+		strings.HasPrefix(dsn, "file:"), dsn == ":memory:":
+		return "sqlite"
+	}
+	return ""
+}
+
+// dbDriverImports returns the driver blank-import lines to emit for the db
+// module. If any db.connect/db.open DSN is dynamic (not a plain string
+// literal) or no scheme could be detected, it returns all three drivers as a
+// safe fallback. Otherwise it returns only the drivers whose schemes were
+// statically detected, letting go mod tidy drop the unused driver packages.
+func (g *Generator) dbDriverImports() []string {
+	if g.dbDynamicDSN || len(g.dbSchemes) == 0 {
+		return []string{DBImportMysql, DBImportPostgres, DBImportSqlite}
+	}
+	var out []string
+	if g.dbSchemes["mysql"] {
+		out = append(out, DBImportMysql)
+	}
+	if g.dbSchemes["postgres"] {
+		out = append(out, DBImportPostgres)
+	}
+	if g.dbSchemes["sqlite"] {
+		out = append(out, DBImportSqlite)
+	}
+	return out
+}
+
